@@ -2,6 +2,7 @@ import http from 'node:http'
 import { WebSocketServer } from 'ws'
 import { config } from './config.js'
 import { setupConnection } from './doc.js'
+import { closeRedis } from './redis.js'
 
 // docs/contracts.md 4.1: ws://host/ws/{docId}, docId는 영문·숫자·_- 1~64자
 const WS_PREFIX = '/ws/'
@@ -69,7 +70,10 @@ async function shutdown(signal: string, drainMs: number) {
   await new Promise((resolve) => setTimeout(resolve, drainMs))
   // TODO(백엔드, 2주차): 모든 문서의 Streams 버퍼 flush, 문서별 LEAVE 발행
   for (const ws of wss.clients) ws.close(CLOSE_SERVICE_RESTART, 'server restarting')
-  server.close(() => process.exit(0))
+  server.close(async () => {
+    await closeRedis()
+    process.exit(0)
+  })
 }
 process.on('SIGTERM', () => void shutdown('SIGTERM', SHUTDOWN_DRAIN_MS))
 // 로컬 개발에서 Ctrl+C는 기다리지 않는다.
