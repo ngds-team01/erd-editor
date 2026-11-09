@@ -19,8 +19,14 @@ const SHUTDOWN_FORCE_EXIT_MS = 25_000
 let ready = false
 let shuttingDown = false
 
+// new URL()은 "//" 같은 경로에서 예외를 던져 프로세스가 죽으므로 쓰지 않는다.
+function pathOf(url: string | undefined): string {
+  return (url ?? '/').split('?', 1)[0]
+}
+
+
 const server = http.createServer((req, res) => {
-  const { pathname } = new URL(req.url ?? '/', 'http://localhost')
+  const pathname = pathOf(req.url)
   if (req.method === 'GET' && pathname === '/healthz') {
     res.writeHead(200, { 'content-type': 'text/plain' }).end('ok')
   } else if (req.method === 'GET' && pathname === '/readyz') {
@@ -33,7 +39,8 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true })
 
 server.on('upgrade', (req, socket, head) => {
-  const { pathname } = new URL(req.url ?? '/', 'http://localhost')
+  socket.on('error', () => socket.destroy())
+  const pathname = pathOf(req.url)
   if (!pathname.startsWith(WS_PREFIX)) {
     socket.end('HTTP/1.1 404 Not Found\r\n\r\n')
     return
@@ -44,6 +51,7 @@ server.on('upgrade', (req, socket, head) => {
   }
   const docId = pathname.slice(WS_PREFIX.length)
   wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.on('error', (err) => console.warn(`[doc:${docId}] WebSocket 오류, 연결 종료: ${err.message}`))
     // contracts 4.1: 형식이 틀린 docId는 연결 후 4400으로 닫는다. 클라이언트는 재접속하지 않는다.
     if (!DOC_ID.test(docId)) {
       ws.close(CLOSE_INVALID_DOC_ID, 'invalid docId')
@@ -64,7 +72,10 @@ async function shutdown(signal: string, drainMs: number) {
   shuttingDown = true
   ready = false
   console.log(`[${config.podId}] ${signal} 받음, ${drainMs}ms 뒤 연결 종료`)
-  setTimeout(() => process.exit(0), SHUTDOWN_FORCE_EXIT_MS).unref()
+  setTimeout(() => {
+    console.warn(`[${config.podId}] ${SHUTDOWN_FORCE_EXIT_MS}ms 안에 종료되지 않아 강제 종료`)
+    process.exit(1)
+  }, SHUTDOWN_FORCE_EXIT_MS).unref()
 
   await new Promise((resolve) => setTimeout(resolve, drainMs))
   // TODO(백엔드, 2주차): 모든 문서의 Streams 버퍼 flush, 문서별 LEAVE 발행
