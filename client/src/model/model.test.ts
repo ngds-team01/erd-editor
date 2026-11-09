@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { addColumn, createTable, getTables, moveTables, readTable, readTables, sortColumns } from './index'
+import {
+  addColumn,
+  createTable,
+  getTables,
+  moveTables,
+  observeTables,
+  readTable,
+  readTables,
+  sortColumns,
+} from './index'
 import type { Position } from './index'
 
 const origin: Position = { x: 0, y: 0 }
@@ -97,6 +106,34 @@ describe('moveTables', () => {
     moveTables(doc, [{ id: 'missing', position: { x: 10, y: 10 } }])
 
     expect(getTables(doc).size).toBe(0)
+  })
+})
+
+describe('observeTables', () => {
+  it('reports the table id for new tables and nested column changes', () => {
+    const doc = new Y.Doc()
+    const reported: string[][] = []
+    observeTables(doc, (tableIds) => {
+      reported.push([...tableIds])
+    })
+
+    const tableId = newTable(doc)
+    addColumn(doc, tableId, { physicalName: 'email', type: 'TEXT' })
+
+    expect(reported).toEqual([[tableId], [tableId]])
+  })
+
+  it('stops reporting after unsubscribing', () => {
+    const doc = new Y.Doc()
+    let calls = 0
+    const unsubscribe = observeTables(doc, () => {
+      calls += 1
+    })
+
+    unsubscribe()
+    newTable(doc)
+
+    expect(calls).toBe(0)
   })
 })
 

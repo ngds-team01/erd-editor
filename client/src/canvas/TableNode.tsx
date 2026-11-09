@@ -1,9 +1,12 @@
 import { Fragment, memo } from 'react'
 import type { Node, NodeProps } from '@xyflow/react'
+import type * as Y from 'yjs'
+import { addColumn } from '../model'
 import type { ColumnData, TableData } from '../model'
 
 //React Flow Node에 TableData의 type 적용
-export type TableNodeType = Node<{ table: TableData }, 'table'>
+// doc: + 컬럼 버튼에서 addColumn을 호출하기 위해 함께 전달
+export type TableNodeType = Node<{ table: TableData; doc: Y.Doc }, 'table'>
 
 // 색상 채널(0~255)을 0~1로 변환한 뒤 조도 적용(sRGB 공식)
 function channelLuminance(channel: number): number {
@@ -73,9 +76,17 @@ function ColumnRow({ column }: { column: ColumnData }) {
 
 // Table 하나를 헤더(논리명, 물리명)와 column 표로 표시, selected = React Flow가 넘겨주는 선택 여부
 function TableNodeView({ data, selected }: NodeProps<TableNodeType>) {
-  const { table } = data
+  const { table, doc } = data
   // PK가 아닌 첫 column의 위치, 이 행 앞에 구분선을 넣음 (없으면 -1)
   const firstNonPk =table.columns.findIndex((column) => !column.pk)
+
+  // 기본 이름과 타입으로 column 추가, 화면은 Y.Doc 변경을 구독하는 Canvas가 갱신
+  function handleAddColumn() {
+    addColumn(doc, table.id, {
+      physicalName: `column_${table.columns.length + 1}`,
+      type: 'VARCHAR(255)',
+    })
+  }
 
   return (
     <div className={selected ? 'table sel' : 'table'}>
@@ -100,6 +111,10 @@ function TableNodeView({ data, selected }: NodeProps<TableNodeType>) {
             ))}
           </>
         )}
+        {/* nodrag: 버튼을 눌러도 node 드래그가 시작되지 않게 하는 React Flow class */}
+        <button type="button" className="t-add nodrag" onClick={handleAddColumn}>
+          + 컬럼
+        </button>
       </div>
     </div>
   )

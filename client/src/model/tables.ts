@@ -72,3 +72,36 @@ export function readTable(table: TableMap): TableData {
 export function readTables(doc: Y.Doc): TableData[] {
   return [...getTables(doc).values()].map(readTable)
 }
+
+//Y.Doc의 변경사항을 감시, 어떤 Table이 바뀌었는지 명시하는 함수
+// onChange: 바뀐 table id들을 받아 처리할 함수, 반환값: 구독 해제 함수
+export function observeTables(
+  doc: Y.Doc,
+  onChange: (tableIds: Set<string>) => void,
+): () => void {
+  const tables = getTables(doc)
+
+  // transaction이 끝날 때 변경 목록(events)을 받아 1번 호출됨, 로컬·원격 변경 모두 해당
+  const observer: Parameters<typeof tables.observeDeep>[0] = (events) => {
+    // 한 transaction에서 같은 table이 여러 번 바뀌어도 id는 1개만 남음
+    const tableIds = new Set<string>()
+
+    for (const event of events) {
+      // path: tables에서 변경된 Y.Map까지의 경로, path[0] = table id
+      if (event.path.length > 0) {
+        tableIds.add(String(event.path[0]))
+      } else {
+        // path가 비어 있으면 tables 자체의 변경(table 추가·삭제), 변경된 key = table id
+        for (const key of event.changes.keys.keys()) {
+          tableIds.add(key)
+        }
+      }
+    }
+
+    onChange(tableIds)
+  }
+
+  // 중첩된 Y.Map(table, columns, column)의 변경까지 감시
+  tables.observeDeep(observer)
+  return () => tables.unobserveDeep(observer)
+}
