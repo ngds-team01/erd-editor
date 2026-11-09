@@ -83,9 +83,10 @@ contracts 7.2를 따른다.
 
 1. `/readyz`를 503으로 바꾸고 새 WebSocket 연결을 거절한다.
 2. 5초 기다린다 (HAProxy가 이 파드로 새 연결을 그만 보내도록).
-3. (2주차) 모든 문서의 Streams 버퍼를 flush하고 LEAVE를 발행한다.
+3. (2주차) 모든 문서의 Streams 버퍼를 flush한다.
 4. 모든 연결을 close code 1012로 닫는다.
-5. Redis 연결을 닫고 종료한다. 25초 안에 끝나지 않으면 강제 종료한다 (`terminationGracePeriodSeconds: 30`보다 짧게).
+5. (2주차) 문서별 LEAVE를 발행한다. 연결을 닫은 뒤에 보내야 다른 파드가 이 파드를 너무 일찍 빼지 않는다.
+6. Redis 연결을 닫고 종료한다. 25초 안에 끝나지 않으면 강제 종료한다 (`terminationGracePeriodSeconds: 30`보다 짧게).
 
 로컬에서 Ctrl+C(SIGINT)는 2번의 대기 없이 바로 종료한다.
 
