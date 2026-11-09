@@ -1,15 +1,23 @@
+import { useSyncExternalStore } from 'react'
 import { useStoreApi } from '@xyflow/react'
-import type * as Y from 'yjs'
 import { createTable, getTables } from '../model'
+import type { Connection, ConnectionStatus } from '../sync/connection'
 
 // Canvas의 SNAP_GRID와 같은 간격
 const GRID_SIZE = 10
 // 새 table의 가운데가 화면 중앙에 오도록 왼쪽 위 좌표에서 빼는 값
 const NEW_TABLE_OFFSET = { x: 110, y: 80 }
 
-// table을 추가할 문서
+// 접속 상태별 화면 문구
+const STATUS_LABELS: Record<ConnectionStatus, string> = {
+  connecting: '연결 중',
+  connected: '연결됨',
+  disconnected: '연결 끊김',
+}
+
+// table을 추가할 문서와 표시할 접속 상태
 type ToolbarProps = {
-  doc: Y.Doc
+  connection: Connection
 }
 
 // 가장 가까운 GRID_SIZE의 배수로 맞춤
@@ -18,7 +26,10 @@ function snap(value: number): number {
 }
 
 // 상단 툴바: 로고와 table 추가 버튼
-export function Toolbar({ doc }: ToolbarProps) {
+export function Toolbar({ connection }: ToolbarProps) {
+  const { doc, docId, subscribeStatus, getStatus } = connection
+  // React 바깥의 접속 상태를 구독, 상태가 바뀌면 Toolbar를 다시 그림
+  const status = useSyncExternalStore(subscribeStatus, getStatus)
   // React Flow 내부 상태(캔버스 크기, 이동량, 배율)에 접근
   const store = useStoreApi()
 
@@ -67,6 +78,11 @@ export function Toolbar({ doc }: ToolbarProps) {
         </svg>
         테이블
       </button>
+      {/* flex-sp: 남는 공간을 차지해 접속 상태를 오른쪽 끝으로 밈 */}
+      <span className="flex-sp" />
+      <span className="save-state">
+        {docId} · {STATUS_LABELS[status]}
+      </span>
     </header>
   )
 }

@@ -7,6 +7,7 @@
   --muted: #6d7789;
   --primary: #3b6fe0;
   --primary-100: #e8eefc;
+  --danger: #d64545;
   --font: 'IBM Plex Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
   --mono: 'IBM Plex Mono', 'IBM Plex Sans KR', Consolas, monospace;
 }
@@ -114,6 +115,22 @@ button {
   background: var(--border);
   margin: 0 5px;
   flex: none;
+}
+
+.flex-sp {
+  flex: 1;
+}
+
+.save-state {
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.doc-error {
+  padding: 20px;
+  color: var(--danger);
 }
 
 .ed-body {
