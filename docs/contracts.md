@@ -165,7 +165,7 @@ awareness.setLocalState({
 | --- | --- |
 | 로컬 (HAProxy 입구) | `ws://localhost:8088/ws/{docId}` |
 | 확장 (AWS) | `wss://<ALB>/ws/{docId}` |
-- `docId` 형식 [초안]: `^[A-Za-z0-9_-]{1,64}$`. 형식이 틀리면 서버는 close code `4400`으로 닫는다.
+- `docId` 형식: `^[A-Za-z0-9_-]{1,64}$`. 형식이 틀리면 서버는 close code `4400`으로 닫는다.
 - y-websocket `WebsocketProvider`를 쓸 때: `new WebsocketProvider('ws://localhost:8088/ws', docId, doc)` (provider가 `/{docId}`를 붙임).
 - 쿼리 파라미터·인증 없음 (범위 제외).
 
