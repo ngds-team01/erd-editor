@@ -21,6 +21,30 @@ CRDT 기반 고가용성 실시간 협업 ERD 편집기 (차세대분산시스�
 
 
 ## 실행 방법
-준비 중
+
+### 로컬 클러스터 (kind)
+
+**공통**: kind v0.33.0, kubectl, make 설치
+```bash
+curl -Lo kind https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+sudo install kind /usr/local/bin/kind && rm kind
+curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install kubectl /usr/local/bin/kubectl && rm kubectl
+sudo apt-get install -y make
+```
+
+```bash
+make up      # 생성 (노드 4개, Kubernetes v1.37.0)
+make status  # 상태 확인
+make down    # 삭제
+```
+
+**WSL2 (Windows)**
+- Docker Desktop 설치 → Settings → Resources → WSL integration에서 Ubuntu 켜기
+- 접속: `localhost:8088`
+
+**VM (Ubuntu 22.04 이상)**
+- CPU 4코어, 메모리 8GB 이상, 네트워크 브리지 모드
+- 접속: `<VM IP>:8088`
 
 
