@@ -50,6 +50,7 @@ make down    # 삭제
 
 **VM (Ubuntu 22.04 이상)**
 - CPU 4코어, 메모리 8GB 이상, 네트워크 브리지 모드
+- Docker 설치: `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER` 후 재로그인
 - 접속: `<VM IP>:8088`
 
 
