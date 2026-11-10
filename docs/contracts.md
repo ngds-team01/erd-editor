@@ -134,7 +134,11 @@ const memos = doc.getMap<Y.Map<any>>('memos')  // { id, text: string, position: 
 
 ```tsx
 // 키를 정렬한 JSON으로 직렬화한 뒤 SHA-256
-hash = sha256(canonicalJSON(doc.toJSON()))
+// doc.toJSON()은 getMap()을 호출하지 않은 문서에서 {}를 돌려주므로 쓰지 않는다
+hash = sha256(canonicalJSON({
+  tables: doc.getMap('tables').toJSON(),
+  relations: doc.getMap('relations').toJSON(),
+}))
 ```
 
 Y.Doc 스키마 타입, 생성·이동·삭제 헬퍼, `canonicalJSON`은 `client/src/model/` 한 곳에만 두고,
@@ -306,6 +310,7 @@ backend editors
     hash-balance-factor 125
     timeout tunnel 1h
     option httpchk GET /readyz
+    default-server inter 1s fall 2 rise 2
     server-template editor 16 editor-headless.default.svc.cluster.local:8080 check resolvers k8s init-addr none
 ```
 
@@ -327,7 +332,7 @@ backend editors
 | `REDIS_URL` | `redis://redis-0.redis:6379` | server, worker |
 | `S3_ENDPOINT` | `http://minio:9000` | server, worker |
 | `S3_BUCKET` | `erd-snapshots` | server, worker |
-| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Secret에서 주입 | server, worker |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Secret에서 주입 (AWS SDK가 자동으로 읽음) | server, worker |
 | `PROPAGATION_MODE` | `adaptive` | server |
 | `FLUSH_INTERVAL_MS` | `200` | server |
 | `HEARTBEAT_INTERVAL_MS` | `5000` | server |
@@ -338,11 +343,12 @@ backend editors
 AWS SDK v3로 MinIO에 붙으려면 region 값과 path-style 설정이 필요하다. `S3Client`는 아래처럼 만든다.
 
 ```tsx
-new S3Client({ endpoint: S3_ENDPOINT, region: AWS_REGION, forcePathStyle: true })
+new S3Client({ endpoint: S3_ENDPOINT || undefined, region: AWS_REGION, forcePathStyle: true })
 ```
 
 - MinIO는 path-style 주소(`http://minio:9000/버킷/키`)만 지원하므로 `forcePathStyle`이 필요하다.
-- AWS S3로 확장할 때는 `S3_ENDPOINT`만 비우면 된다.
+- 접속 키는 SDK 기본 이름(`AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`)으로 넣는다. SDK는 `S3_ACCESS_KEY` 같은 이름을 읽지 않는다.
+- AWS S3로 확장할 때는 `S3_ENDPOINT`만 비우면 된다 (빈 문자열 대신 `undefined`가 넘어가도록 `|| undefined`).
 
 ---
 
@@ -356,3 +362,5 @@ new S3Client({ endpoint: S3_ENDPOINT, region: AWS_REGION, forcePathStyle: true }
 | --- | --- | --- | --- |
 | v0.1 | 2026-11-05 | 초안 작성 (제안서 표 9 + 데이터 모델·프로토콜 세부) | 김령준 |
 | v0.1.1 | 2026-11-06 | 백엔드 확정 | 이지민 |
+| v0.1.2 | 2026-11-09 |	인프라 확정,  7.3 수정댓글 |	박지호 |
+| v0.1.3 | 2026-11-10 | 해시 대상 명시, S3 키 이름, HAProxy 체크 주기 | 이지민 |
