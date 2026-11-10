@@ -332,7 +332,7 @@ backend editors
 | `REDIS_URL` | `redis://redis-0.redis:6379` | server, worker |
 | `S3_ENDPOINT` | `http://minio:9000` | server, worker |
 | `S3_BUCKET` | `erd-snapshots` | server, worker |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Secret에서 주입 (AWS SDK가 자동으로 읽음) | server, worker |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Secret에서 주입 | server, worker |
 | `PROPAGATION_MODE` | `adaptive` | server |
 | `FLUSH_INTERVAL_MS` | `200` | server |
 | `HEARTBEAT_INTERVAL_MS` | `5000` | server |
