@@ -24,7 +24,7 @@ CRDT 기반 고가용성 실시간 협업 ERD 편집기 (차세대분산시스�
 
 ### 로컬 클러스터 (kind)
 
-**1. 설치** (kind v0.33.0, kubectl, make)
+**1. 설치** (Docker, kind v0.33.0, kubectl, make)
 ```bash
 # kind 설치
 curl -Lo kind https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
