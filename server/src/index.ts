@@ -2,6 +2,7 @@ import http from 'node:http'
 import { WebSocketServer } from 'ws'
 import { config } from './config.js'
 import { setupConnection } from './doc.js'
+import { register } from './metrics.js'
 import { closeRedis } from './redis.js'
 
 // docs/contracts.md 4.1: ws://host/ws/{docId}, docId는 영문·숫자·_- 1~64자
@@ -32,6 +33,12 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain' }).end('ok')
   } else if (req.method === 'GET' && pathname === '/readyz') {
     res.writeHead(ready ? 200 : 503, { 'content-type': 'text/plain' }).end(ready ? 'ready' : 'not ready')
+  } else if (req.method === 'GET' && pathname === '/metrics') {
+    // contracts 7.3: Prometheus 형식 지표
+    register.metrics().then(
+      (body) => res.writeHead(200, { 'content-type': register.contentType }).end(body),
+      () => res.writeHead(500).end(),
+    )
   } else {
     res.writeHead(404).end()
   }
