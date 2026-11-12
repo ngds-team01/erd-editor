@@ -70,7 +70,12 @@ y-websocket 프로토콜을 그대로 쓴다. 바이너리 메시지의 첫 varU
 ### 연결 유지와 종료
 
 - 서버는 30초마다 ping을 보내고, 다음 ping 때까지 pong이 없으면 연결을 닫는다.
-- 문서에 마지막 연결이 끊기면 서버 메모리에서 문서를 내린다. (1주차에는 영속화가 없어 내용이 사라진다. 2주차에 Streams·스냅샷으로 복원)
+- 문서에 마지막 연결이 끊기면 Streams 버퍼를 flush하고 서버 메모리에서 문서를 내린다. 다시 열 때 Streams·스냅샷에서 복원하는 기능은 3주차.
+
+### Streams 기록 (contracts 6.1, 6.2)
+
+- 이 파드 사용자의 편집만 `FLUSH_INTERVAL_MS`(200ms) 동안 모아 `Y.mergeUpdates`로 합친 뒤 `XADD doc:{docId}:log * u <bin> pod <podId>` 1회로 기록한다. 다른 파드에서 받은 편집은 그 파드가 기록하므로 기록하지 않는다.
+- Redis가 끊긴 동안에는 메모리 버퍼에 합쳐 두었다가 다시 붙으면 바로 기록한다. 그사이 문서를 내려도 버퍼는 남는다.
 
 | close code | 의미 | 클라이언트가 할 일 |
 | --- | --- | --- |
@@ -98,7 +103,7 @@ contracts 7.2를 따른다.
 | `POD_ID` | 호스트 이름 | 로그와 Pub/Sub에서 자기 파드를 구분하는 ID. Kubernetes에서는 Downward API `metadata.name` | 사용 중 |
 | `REDIS_URL` | `redis://localhost:6379` | Redis 주소 | 사용 중 |
 | `PROPAGATION_MODE` | `adaptive` | `adaptive` 또는 `broadcast` (실험 3) | 2주차 |
-| `FLUSH_INTERVAL_MS` | `200` | Streams 기록 병합 주기 | 2주차 |
+| `FLUSH_INTERVAL_MS` | `200` | Streams 기록 병합 주기 | 사용 중 |
 | `HEARTBEAT_INTERVAL_MS` | `5000` | SHARED 문서의 HEARTBEAT 주기 | 2주차 |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `AWS_REGION` | — | MinIO 스냅샷 복원 | 3주차 |
 
@@ -106,7 +111,7 @@ contracts 7.2를 따른다.
 
 - 서버 시작 시 `REDIS_URL`로 접속한다. Redis가 없어도 서버는 뜨고, 같은 파드 안의 편집은 계속된다.
 - 끊기면 0.2초, 0.4초, … 최대 5초 간격으로 계속 재접속한다.
-- 끊긴 동안 보낸 Redis 명령은 쌓아 두지 않고 바로 실패한다. 기록할 업데이트는 서버가 따로 버퍼에 모아 두었다가 다시 붙으면 flush한다 (2주차, contracts 6.2).
+- 끊긴 동안 보낸 Redis 명령은 쌓아 두지 않고 바로 실패한다. 기록할 업데이트는 서버가 따로 버퍼에 모아 두었다가 다시 붙으면 flush한다 (contracts 6.2).
 - 로그는 상태가 바뀔 때만 남는다: `Redis 연결됨` → `Redis 연결 끊김, 재접속 시도 중` → `Redis 다시 연결됨 (N번 재시도)`
 
 ## 파일 구조

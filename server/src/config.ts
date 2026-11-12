@@ -6,4 +6,6 @@ export const config = {
   // Kubernetes에서는 Downward API로 metadata.name(파드 이름)을 넣는다.
   podId: process.env.POD_ID ?? os.hostname(),
   redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
+  // contracts 6.2: 이 시간 동안 모은 업데이트를 합쳐 XADD 1회
+  flushIntervalMs: Number(process.env.FLUSH_INTERVAL_MS ?? 200),
 }

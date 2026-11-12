@@ -6,6 +6,7 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import { WebSocket } from 'ws'
+import { flush as flushStream, record as recordStream } from './streams.js'
 
 const MESSAGE_SYNC = 0
 const MESSAGE_AWARENESS = 1
@@ -49,7 +50,9 @@ class SharedDoc extends Y.Doc {
       const message = encoding.toUint8Array(encoder)
       // 보낸 연결에는 되돌려 보내지 않는다.
       for (const conn of this.conns.keys()) if (conn !== origin) send(this, conn, message)
-      // TODO(백엔드, 2주차): SHARED일 때만 Pub/Sub doc:{docId}:updates 발행, Streams doc:{docId}:log 기록(200ms 병합)
+      // TODO(백엔드, 2주차): SHARED일 때만 Pub/Sub doc:{docId}:updates 발행
+      // contracts 6.2: 이 파드 클라이언트(WebSocket)가 보낸 변경만 기록한다. 다른 파드에서 받은 변경은 그 파드가 기록한다.
+      if (origin instanceof WebSocket) recordStream(this.name, update)
     })
   }
 }
@@ -72,8 +75,9 @@ function closeConn(doc: SharedDoc, conn: WebSocket) {
     awarenessProtocol.removeAwarenessStates(doc.awareness, [...controlled], null)
     console.log(`[doc:${doc.name}] 연결 종료, 남은 연결 ${doc.conns.size}`)
     if (doc.conns.size === 0) {
-      // 아직 영속화가 없으므로 마지막 연결이 끊기면 문서가 사라진다.
-      // TODO(백엔드, 2주차): contracts 5.3-6 순서대로 Streams flush → LEAVE 발행 → 구독 해제 후 내린다.
+      // contracts 5.3-6: Streams flush → (TODO 2주차: LEAVE 발행 → 구독 해제) → 메모리에서 제거
+      // Redis가 끊겨 있으면 버퍼는 streams.ts에 남았다가 재연결 후 기록된다.
+      void flushStream(doc.name)
       doc.destroy()
       docs.delete(doc.name)
     }
