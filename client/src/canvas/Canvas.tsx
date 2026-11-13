@@ -16,9 +16,10 @@ const DEFAULT_VIEWPORT = { x: 40, y: 40, zoom: 1 }
 // 드래그 중 Y.Doc에 position을 쓰는 최소 간격 (2.7)
 const DRAG_WRITE_INTERVAL_MS = 50
 
-// Canvas가 읽고 쓰는 문서
+// Canvas가 읽고 쓰는 문서, onOpenTable: table node를 더블클릭했을 때 편집 패널을 열 함수
 type CanvasProps = {
   doc: Y.Doc
+  onOpenTable: (tableId: string) => void
 }
 
 // ReactFlow가 호출하는 드래그 이벤트 4개만 고른 type
@@ -119,7 +120,7 @@ function createDragHandlers(doc: Y.Doc): DragHandlers {
 }
 
 // 최소 20%, 최대 250% 줌 적용 가능
-export function Canvas({ doc }: CanvasProps) {
+export function Canvas({ doc, onOpenTable }: CanvasProps) {
   // 함수를 넘겨 첫 렌더링 때만 문서 전체를 읽음
   const [nodes, setNodes] = useState(() => readTables(doc).map((table) => toNode(table, doc)))
   // lastWrite가 유지되도록 처음 한 번만 생성
@@ -154,6 +155,9 @@ export function Canvas({ doc }: CanvasProps) {
         // 기본 삭제키와 방향키 이동은 Y.Doc에 저장되지 않고 내 화면에만 적용되므로 끔
         deleteKeyCode={null}
         disableKeyboardA11y
+        // 더블클릭은 확대 대신 편집 패널 열기에 사용, node.id = table id
+        zoomOnDoubleClick={false}
+        onNodeDoubleClick={(_event, node) => onOpenTable(node.id)}
         // 객체의 필드 4개를 각각 prop으로 펼쳐서 전달
         {...dragHandlers}
       >

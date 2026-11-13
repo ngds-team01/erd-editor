@@ -65,6 +65,19 @@ export function addColumn(doc: Y.Doc, tableId: string, input: NewColumn): string
   return id
 }
 
+// 기본 이름(column_{개수+1})과 타입(VARCHAR(255))으로 column 추가, Table Node와 편집 패널의 + 컬럼 버튼이 공유
+export function addNextColumn(doc: Y.Doc, tableId: string): string | null {
+  const table = getTables(doc).get(tableId)
+  if (!table) {
+    return null
+  }
+
+  return addColumn(doc, tableId, {
+    physicalName: `column_${getColumns(table).size + 1}`,
+    type: 'VARCHAR(255)',
+  })
+}
+
 // updateColumn에 넘기는 변경 값 묶음. id / order는 제외
 export type ColumnPatch = Partial<Omit<ColumnData, 'id' | 'order'>>
 

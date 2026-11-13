@@ -1,11 +1,11 @@
 import { Fragment, memo } from 'react'
 import type { Node, NodeProps } from '@xyflow/react'
 import type * as Y from 'yjs'
-import { addColumn } from '../model'
+import { addNextColumn } from '../model'
 import type { ColumnData, TableData } from '../model'
 
 //React Flow Node에 TableData의 type 적용
-// doc: + 컬럼 버튼에서 addColumn을 호출하기 위해 함께 전달
+// doc: + 컬럼 버튼에서 addNextColumn을 호출하기 위해 함께 전달
 export type TableNodeType = Node<{ table: TableData; doc: Y.Doc }, 'table'>
 
 // 색상 채널(0~255)을 0~1로 변환한 뒤 조도 적용(sRGB 공식)
@@ -82,10 +82,7 @@ function TableNodeView({ data, selected }: NodeProps<TableNodeType>) {
 
   // 기본 이름과 타입으로 column 추가, 화면은 Y.Doc 변경을 구독하는 Canvas가 갱신
   function handleAddColumn() {
-    addColumn(doc, table.id, {
-      physicalName: `column_${table.columns.length + 1}`,
-      type: 'VARCHAR(255)',
-    })
+    addNextColumn(doc, table.id)
   }
 
   return (

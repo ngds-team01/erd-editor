@@ -323,3 +323,282 @@ button {
 .c-uq {
   color: #7c6bc4;
 }
+
+.btn.danger {
+  color: var(--danger);
+  border-color: #e8b8b8;
+}
+
+.btn.danger:hover {
+  background: #fdf3f3;
+}
+
+.panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  width: 364px;
+  max-width: 100%;
+  overflow-y: auto;
+  padding: 14px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 12px rgba(20, 30, 60, 0.06);
+}
+
+.p-title {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.p-title .btn {
+  height: 26px;
+  font-size: 11px;
+}
+
+.p-title-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.p-field {
+  display: block;
+}
+
+.p-label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.panel input[type='text'] {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.panel input[type='text'].mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.panel input[type='text']:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.panel input[type='text']:disabled {
+  background: var(--bg);
+}
+
+.panel input::placeholder {
+  color: #a9b2c2;
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sw {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.sw.on {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+.p-sub {
+  margin: 16px 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.p-sub span {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.p-sub-btn {
+  margin-left: auto;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.p-col,
+.p-uq {
+  margin-bottom: 8px;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.p-col .r1 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.p-col .r2,
+.p-col .r3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.p-col .r2 input[type='text'],
+.p-col .r3 input[type='text'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.ck {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.ck input {
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.ck.dis {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ck.dis input {
+  cursor: not-allowed;
+}
+
+.ord {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.ord button,
+.uq-del {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ord button:hover:not(:disabled),
+.uq-del:hover {
+  background: #f3f6fb;
+  color: var(--text);
+}
+
+.ord button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.p-warn {
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: #fff6e6;
+  color: #a15c00;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.p-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.p-add {
+  width: 100%;
+  justify-content: center;
+}
+
+.uq-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.uq-top input[type='text'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel .uq-top input[type='text'] {
+  height: 26px;
+}
+
+.uq-no {
+  flex: none;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #f1eefb;
+  color: #7c6bc4;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.uq-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.uq-chip {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-2);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.uq-chip.on {
+  border-color: var(--primary);
+  background: var(--primary-100);
+  color: var(--primary);
+  font-weight: 600;
+}
