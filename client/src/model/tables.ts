@@ -1,7 +1,8 @@
 import * as Y from 'yjs'
 import { addColumn, sortColumns } from './columns'
-import { DEFAULT_TABLE_COLOR, getTables } from './schema'
-import type { ColumnData, Position, TableData, TableMap } from './schema'
+import { deleteRelation } from './relations'
+import { DEFAULT_TABLE_COLOR, getRelations, getTables, writeChanged } from './schema'
+import type { ColumnData, Position, TableData, TableMap, UniqueData } from './schema'
 
 // Table을 생성할 때 받는 입력값, id, color, columns, uniques는 createTable에서 설정
 export type NewTable = {
@@ -54,17 +55,52 @@ export function moveTables(doc: Y.Doc, moves: TableMove[]): void {
     }
   })
 }
+// 편집 패널에서 변경 가능한 Table 요소 type
+export type TablePatch = Partial<Pick<TableData, 'logicalName' | 'physicalName' | 'color'>>
+// table의 이름과 색상을 변경하는 함수
+export function updateTable(doc: Y.Doc, id: string, patch: TablePatch): boolean {
+  const table = getTables(doc).get(id)
+  if (!table) {
+    return false
+  }
+
+  doc.transact(() => writeChanged(table, patch))
+  return true
+}
+
+// Table 삭제를 위한 함수, 연결된 관계가 있다면 해당 관계도 같이 끊어지게 된다
+export function deleteTable(doc: Y.Doc, id: string): boolean {
+  const tables = getTables(doc)
+  if (!tables.has(id)) {
+    return false
+  }
+
+  const relations = getRelations(doc)
+
+  doc.transact(() => {
+    for (const [relationId, relation] of [...relations.entries()]) {
+      if (relation.get('fromTable') === id || relation.get('toTable') === id) {
+        deleteRelation(doc, relationId)
+      }
+    }
+    tables.delete(id)
+  })
+
+  return true
+}
 
 // Y.Map인 Table을 toJSON으로 일반 객체(TableData)로 변환
 // columns는 순서 없는 객체로 나오므로 order → id로 정렬한 배열로 교체 (모든 클라이언트에서 같은 순서)
 export function readTable(table: TableMap): TableData {
-  const json = table.toJSON() as Omit<TableData, 'columns'> & {
+  const json = table.toJSON() as Omit<TableData, 'columns' | 'uniques'> & {
     columns: Record<string, ColumnData>
+    uniques: Record<string, UniqueData>
   }
 
   return {
     ...json,
     columns: sortColumns(Object.values(json.columns)),
+    uniques: Object.values(json.uniques).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   }
 }
 
