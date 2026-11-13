@@ -8,6 +8,7 @@ import {
   deleteColumn,
   deleteRelation,
   deleteTable,
+  deleteTables,
   deleteUnique,
   getRelations,
   getTables,
@@ -450,6 +451,22 @@ describe('deleteTable', () => {
 
     expect(countUpdates(doc, () => deleteTable(doc, orders))).toBe(1)
     expect(getTables(doc).has(orders)).toBe(false)
+    expect(getRelations(doc).size).toBe(0)
+    expect(namesOf(doc, items)).toEqual(['id'])
+  })
+})
+
+describe('deleteTables', () => {
+  it('removes every selected table and the relations between them in one transaction', () => {
+    const doc = new Y.Doc()
+    const users = newTable(doc)
+    const orders = newTable(doc)
+    const items = newTable(doc)
+    relate(doc, users, orders)
+    relate(doc, orders, items)
+
+    expect(countUpdates(doc, () => deleteTables(doc, [users, orders, 'missing']))).toBe(1)
+    expect([...getTables(doc).keys()]).toEqual([items])
     expect(getRelations(doc).size).toBe(0)
     expect(namesOf(doc, items)).toEqual(['id'])
   })

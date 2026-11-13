@@ -16,14 +16,23 @@ function App({ connection }: AppProps) {
   const [editingTableId, setEditingTableId] = useState<string | null>(null)
   // TablePanel의 구독 의존 값이므로 useCallback으로 같은 함수를 유지해 매 렌더링 재구독을 막음
   const closePanel = useCallback(() => setEditingTableId(null), [])
+  //table node 클릭 시 호출: 패널이 열려 있으면 클릭한 table로 전환
+  const selectTable = useCallback((tableId: string) => {
+    setEditingTableId((current) => (current === null ? null : tableId))
+  }, [])
 
   return (
     <ReactFlowProvider>
       <div className="editor">
         <Toolbar connection={connection} />
         <main className="ed-body">
-          {/* table node를 더블클릭하면 그 table id로 패널을 엶 */}
-          <Canvas doc={connection.doc} onOpenTable={setEditingTableId} />
+          {/* table node를 더블클릭하거나 ⋯ 버튼을 누르면 그 table id로 패널을 엶 */}
+          <Canvas
+            doc={connection.doc}
+            onOpenTable={setEditingTableId}
+            onSelectTable={selectTable}
+            onClosePanel={closePanel}
+          />
           {/* key: 다른 table을 열면 패널을 새로 만들어 그 table을 처음부터 다시 읽음 */}
           {editingTableId && (
             <TablePanel

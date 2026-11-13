@@ -89,6 +89,15 @@ export function deleteTable(doc: Y.Doc, id: string): boolean {
   return true
 }
 
+//Table 여러개를 한 transaction에 지우는 함수
+export function deleteTables(doc: Y.Doc, ids: string[]): void {
+  doc.transact(() => {
+    for (const id of ids) {
+      deleteTable(doc, id)
+    }
+  })
+}
+
 // Y.Map인 Table을 toJSON으로 일반 객체(TableData)로 변환
 // columns는 순서 없는 객체로 나오므로 order → id로 정렬한 배열로 교체 (모든 클라이언트에서 같은 순서)
 export function readTable(table: TableMap): TableData {
