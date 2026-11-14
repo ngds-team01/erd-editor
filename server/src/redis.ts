@@ -78,5 +78,9 @@ async function quit(client: Redis) {
 }
 
 export async function closeRedis(): Promise<void> {
-  await Promise.all([quit(redis), quit(subscriber)])
+  // 구독 연결은 QUIT 없이 바로 끊는다. Redis가 끊긴 동안 쌓인 SUBSCRIBE 뒤에서 QUIT가 기다리면
+  // 종료가 강제 종료 시간(25초)까지 멈추기 때문이다. 구독 연결에는 마무리할 명령이 없다.
+  subscriber.disconnect()
+  // 명령 연결은 보내던 PUBLISH가 끝나도록 QUIT로 닫는다 (끊겨 있으면 quit()이 실패해 disconnect).
+  await quit(redis)
 }
