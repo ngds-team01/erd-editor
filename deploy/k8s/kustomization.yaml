@@ -5,3 +5,9 @@ namespace: default
 resources:
   - redis.yaml
   - minio.yaml
+  - editor.yaml
+  - haproxy.yaml
+configMapGenerator:
+  - name: haproxy-config
+    files:
+      - haproxy.cfg
