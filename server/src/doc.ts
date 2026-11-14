@@ -6,6 +6,7 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import { WebSocket } from 'ws'
+import { countMessage, setStatsSource } from './metrics.js'
 
 const MESSAGE_SYNC = 0
 const MESSAGE_AWARENESS = 1
@@ -56,6 +57,14 @@ class SharedDoc extends Y.Doc {
 
 export const docs = new Map<string, SharedDoc>()
 
+// /metrics의 editor_ws_connections, editor_docs{mode} 값 (contracts 7.3)
+// 적응형 전파(#18)가 들어오기 전에는 모든 문서가 LOCAL이다.
+setStatsSource(() => {
+  let connections = 0
+  for (const doc of docs.values()) connections += doc.conns.size
+  return { connections, local: docs.size, shared: 0 }
+})
+
 function getDoc(name: string): SharedDoc {
   let doc = docs.get(name)
   if (!doc) {
@@ -97,12 +106,14 @@ function handleMessage(doc: SharedDoc, conn: WebSocket, message: Uint8Array) {
     const encoder = encoding.createEncoder()
     switch (decoding.readVarUint(decoder)) {
       case MESSAGE_SYNC:
+        countMessage('sync')
         encoding.writeVarUint(encoder, MESSAGE_SYNC)
         syncProtocol.readSyncMessage(decoder, encoder, doc, conn)
         // sync step 1을 받았을 때만 답(step 2)이 생긴다.
         if (encoding.length(encoder) > 1) send(doc, conn, encoding.toUint8Array(encoder))
         break
       case MESSAGE_AWARENESS:
+        countMessage('awareness')
         awarenessProtocol.applyAwarenessUpdate(doc.awareness, decoding.readVarUint8Array(decoder), conn)
         break
       case MESSAGE_QUERY_AWARENESS:

@@ -36,7 +36,7 @@ docker run --rm -p 8080:8080 -e REDIS_URL=redis://host.docker.internal:6379 erd-
 | --- | --- |
 | `GET /healthz` | 프로세스가 살아 있으면 항상 `200 ok` |
 | `GET /readyz` | 새 연결을 받을 수 있으면 `200 ready`, 시작 전이거나 종료 중이면 `503`. **Redis 연결 상태와는 무관** (contracts 7.1) |
-| `GET /metrics` | (2주차) Prometheus 지표 |
+| `GET /metrics` | Prometheus 지표 (contracts 7.3, 아래 "지표") |
 | `WS /ws/{docId}` | 문서 편집 연결. 아래 "WebSocket" 참고 |
 | 그 밖의 경로 | `404` |
 
@@ -108,6 +108,19 @@ contracts 7.2를 따른다.
 - 끊기면 0.2초, 0.4초, … 최대 5초 간격으로 계속 재접속한다.
 - 끊긴 동안 보낸 Redis 명령은 쌓아 두지 않고 바로 실패한다. 기록할 업데이트는 서버가 따로 버퍼에 모아 두었다가 다시 붙으면 flush한다 (2주차, contracts 6.2).
 - 로그는 상태가 바뀔 때만 남는다: `Redis 연결됨` → `Redis 연결 끊김, 재접속 시도 중` → `Redis 다시 연결됨 (N번 재시도)`
+
+## 지표 (`GET /metrics`, contracts 7.3)
+
+| 이름 | 종류 | 값 |
+| --- | --- | --- |
+| `editor_ws_connections` | gauge | 현재 WebSocket 연결 수 (HPA 기준) |
+| `editor_messages_total{type}` | counter | `sync`·`awareness`: 클라이언트에게 받은 메시지 / `pubsub_out`: 발행 / `pubsub_in`: 구독으로 배달받은 메시지(자기 것 포함) / `xadd`: Streams 기록 |
+| `editor_sync_latency_seconds` | histogram | 다른 파드 UPDATE를 받았을 때 `now - sentAt` (buckets 0.01~2초) |
+| `editor_doc_restore_seconds` | histogram | 문서 복원 시간 (3주차 복원 구현 때 값이 쌓임) |
+| `editor_docs{mode}` | gauge | 열린 문서 수 (`local`, `shared`) |
+
+- Redis 작업량은 전체 파드의 `pubsub_out + pubsub_in + xadd` 합으로 본다. 프로세스 CPU·메모리 등 Node 기본 지표도 같이 나온다.
+- 지표 이름은 모두 미리 노출해 둔다. `pubsub_in`·`pubsub_out`·지연·`shared`는 적응형 전파(#18), `xadd`는 Streams 기록(#20)이 main에 들어오면 값이 쌓인다.
 
 ## 파일 구조
 
