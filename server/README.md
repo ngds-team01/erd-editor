@@ -131,7 +131,7 @@ contracts 7.2를 따른다.
 | `editor_docs{mode}` | gauge | 열린 문서 수 (`local`, `shared`) |
 
 - Redis 작업량은 전체 파드의 `pubsub_out + pubsub_in + xadd` 합으로 본다. 프로세스 CPU·메모리 등 Node 기본 지표도 같이 나온다.
-- 지표 이름은 모두 미리 노출해 둔다. `pubsub_in`·`pubsub_out`·지연·`shared`는 적응형 전파(#18), `xadd`는 Streams 기록(#20)이 main에 들어오면 값이 쌓인다.
+- 지표 이름은 모두 미리 노출해 둔다. `xadd`는 Streams 기록(#20)이 main에 들어오면 값이 쌓인다.
 
 ## 파일 구조
 

@@ -5,6 +5,7 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 import { config } from './config.js'
 import { MessageType, decodeEnvelope, encodeEnvelope, typeName } from './envelope.js'
 import type { Envelope } from './envelope.js'
+import { countMessage, syncLatency } from './metrics.js'
 import { isRedisReady, onRedisReady, redis, subscriber } from './redis.js'
 
 /** Pub/Sub로 받은 변경에 붙이는 origin. 이 origin의 변경은 다시 발행하지 않는다. */
@@ -144,8 +145,12 @@ export class DocPropagation {
         // 5.3-3: 상대 state vector에 없는 부분만 돌려준다
         this.publish(MessageType.SYNC2, Y.encodeStateAsUpdate(this.doc, payload), from)
         break
-      case MessageType.SYNC2:
       case MessageType.UPDATE:
+        // 7.3: 다른 파드 사용자의 편집이 이 파드에 도착하기까지 걸린 시간
+        syncLatency.observe(Math.max(0, Date.now() - envelope.sentAt) / 1000)
+        Y.applyUpdate(this.doc, payload, REMOTE_ORIGIN)
+        break
+      case MessageType.SYNC2:
         Y.applyUpdate(this.doc, payload, REMOTE_ORIGIN)
         break
       case MessageType.AWARENESS:
@@ -191,6 +196,7 @@ export class DocPropagation {
     // Redis가 끊긴 동안 못 보낸 변경은 재연결 후 JOIN → SYNC1·SYNC2로 다시 맞춘다.
     if (this.left || !isRedisReady()) return
     const data = encodeEnvelope({ type, from: config.podId, to, sentAt: Date.now(), payload })
+    countMessage('pubsub_out')
     redis.publish(this.channel, Buffer.from(data.buffer, data.byteOffset, data.byteLength)).catch((err: Error) => {
       console.warn(`[doc:${this.doc.name}] ${typeName(type)} 발행 실패: ${err.message}`)
     })
@@ -206,6 +212,8 @@ export class DocPropagation {
 subscriber.on('messageBuffer', (channel: Buffer, message: Buffer) => {
   const name = channel.toString()
   if (!name.startsWith(CHANNEL_PREFIX) || !name.endsWith(CHANNEL_SUFFIX)) return
+  // Redis가 이 파드에 배달한 횟수 (자기 메시지·다른 파드 앞 메시지도 배달은 일어나므로 센다)
+  countMessage('pubsub_in')
   const docId = name.slice(CHANNEL_PREFIX.length, -CHANNEL_SUFFIX.length)
   const propagation = propagations.get(docId)
   if (!propagation) return

@@ -71,11 +71,14 @@ class SharedDoc extends Y.Doc {
 export const docs = new Map<string, SharedDoc>()
 
 // /metrics의 editor_ws_connections, editor_docs{mode} 값 (contracts 7.3)
-// 적응형 전파(#18)가 들어오기 전에는 모든 문서가 LOCAL이다.
 setStatsSource(() => {
   let connections = 0
-  for (const doc of docs.values()) connections += doc.conns.size
-  return { connections, local: docs.size, shared: 0 }
+  let shared = 0
+  for (const doc of docs.values()) {
+    connections += doc.conns.size
+    if (doc.propagation.shared) shared += 1
+  }
+  return { connections, local: docs.size - shared, shared }
 })
 
 function getDoc(name: string): SharedDoc {
