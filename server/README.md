@@ -77,6 +77,16 @@ y-websocket 프로토콜을 그대로 쓴다. 바이너리 메시지의 첫 varU
 | 1012 | 서버 종료·재시작 중 | 재접속 (다른 파드로 연결된다) |
 | 4400 | `docId` 형식이 틀림 | 재접속하지 않고 오류 표시 |
 
+### 다른 파드와 전파 (contracts 5장)
+
+- 문서를 처음 열면 `doc:{docId}:updates` 채널을 구독하고 JOIN을 보낸다. 다른 파드가 응답하지 않으면 **LOCAL**(Pub/Sub 발행 안 함).
+- 다른 파드도 같은 문서를 열고 있으면 **SHARED**: 이 파드 사용자의 편집(UPDATE)과 커서(AWARENESS)를 발행하고, 받은 것은 이 파드 사용자에게 전달한다. 받은 것은 다시 발행하지 않는다.
+- 처음 만난 파드끼리는 SYNC1·SYNC2로 서로 없는 부분을 주고받는다.
+- SHARED 동안 `HEARTBEAT_INTERVAL_MS`(5초)마다 HEARTBEAT를 보내고, 3배(15초) 동안 소식 없는 파드는 피어에서 뺀다. 피어가 없으면 LOCAL로 돌아간다.
+- 마지막 사용자가 나가면 LEAVE를 보내고 구독을 해제한 뒤 문서를 내린다.
+- Redis가 다시 붙으면 열린 문서마다 JOIN을 다시 보내 끊긴 동안의 변경을 SYNC로 맞춘다.
+- contracts와 다르게 해석한 곳: 5.3-3 "처음 보는 피어면 SYNC1"은 "아직 SYNC1을 보내지 않은 피어면"으로 구현했다. JOIN을 보낸 쪽은 상대의 HEARTBEAT(규칙 2로 피어 등록)를 SYNC1보다 먼저 받아서, 문구 그대로면 자기 SYNC1을 보내지 않아 양방향 동기화가 깨진다.
+
 ### 종료 순서 (SIGTERM)
 
 contracts 7.2를 따른다.
@@ -97,14 +107,15 @@ contracts 7.2를 따른다.
 | `PORT` | `8080` | HTTP·WebSocket 포트 | 사용 중 |
 | `POD_ID` | 호스트 이름 | 로그와 Pub/Sub에서 자기 파드를 구분하는 ID. Kubernetes에서는 Downward API `metadata.name` | 사용 중 |
 | `REDIS_URL` | `redis://localhost:6379` | Redis 주소 | 사용 중 |
-| `PROPAGATION_MODE` | `adaptive` | `adaptive` 또는 `broadcast` (실험 3) | 2주차 |
+| `PROPAGATION_MODE` | `adaptive` | `adaptive` 또는 `broadcast` (실험 3, 피어가 없어도 항상 발행) | 사용 중 |
 | `FLUSH_INTERVAL_MS` | `200` | Streams 기록 병합 주기 | 2주차 |
-| `HEARTBEAT_INTERVAL_MS` | `5000` | SHARED 문서의 HEARTBEAT 주기 | 2주차 |
+| `HEARTBEAT_INTERVAL_MS` | `5000` | SHARED 문서의 HEARTBEAT 주기. 피어 타임아웃은 3배 | 사용 중 |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `AWS_REGION` | — | MinIO 스냅샷 복원 | 3주차 |
 
 ## Redis 연결
 
 - 서버 시작 시 `REDIS_URL`로 접속한다. Redis가 없어도 서버는 뜨고, 같은 파드 안의 편집은 계속된다.
+- 명령용 연결과 구독 전용 연결 두 개를 쓴다 (구독 중인 연결로는 PUBLISH·XADD를 못 쓴다). 구독 연결 로그는 `Redis(구독)`으로 표시한다.
 - 끊기면 0.2초, 0.4초, … 최대 5초 간격으로 계속 재접속한다.
 - 끊긴 동안 보낸 Redis 명령은 쌓아 두지 않고 바로 실패한다. 기록할 업데이트는 서버가 따로 버퍼에 모아 두었다가 다시 붙으면 flush한다 (2주차, contracts 6.2).
 - 로그는 상태가 바뀔 때만 남는다: `Redis 연결됨` → `Redis 연결 끊김, 재접속 시도 중` → `Redis 다시 연결됨 (N번 재시도)`
@@ -120,7 +131,7 @@ contracts 7.2를 따른다.
 | `editor_docs{mode}` | gauge | 열린 문서 수 (`local`, `shared`) |
 
 - Redis 작업량은 전체 파드의 `pubsub_out + pubsub_in + xadd` 합으로 본다. 프로세스 CPU·메모리 등 Node 기본 지표도 같이 나온다.
-- 지표 이름은 모두 미리 노출해 둔다. `pubsub_in`·`pubsub_out`·지연·`shared`는 적응형 전파(#18), `xadd`는 Streams 기록(#20)이 main에 들어오면 값이 쌓인다.
+- 지표 이름은 모두 미리 노출해 둔다. `xadd`는 Streams 기록(#20)이 main에 들어오면 값이 쌓인다.
 
 ## 파일 구조
 
