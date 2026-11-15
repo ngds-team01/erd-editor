@@ -3,7 +3,7 @@ KIND_CONFIG  := deploy/kind/cluster.yaml
 CONTEXT      := kind-$(CLUSTER_NAME)
 SERVER_IMAGE := crdt-server:dev
 
-.PHONY: up down status server deploy reset
+.PHONY: up down status server deploy reset grafana
 
 up:
 	@kind get clusters 2>/dev/null | grep -qx $(CLUSTER_NAME) || kind create cluster --config $(KIND_CONFIG)
@@ -25,6 +25,10 @@ server:
 deploy:
 	kubectl --context $(CONTEXT) apply -k deploy/k8s
 
+grafana:
+	@echo "대시보드: http://localhost:3000/d/erd-editor (Ctrl+C로 종료)"
+	kubectl --context $(CONTEXT) port-forward svc/grafana 3000:3000
+
 reset:
 	kubectl --context $(CONTEXT) delete -k deploy/k8s --ignore-not-found
-	kubectl --context $(CONTEXT) delete pvc data-redis-0 data-minio-0 --ignore-not-found
+	kubectl --context $(CONTEXT) delete pvc data-redis-0 data-minio-0 data-prometheus-0 --ignore-not-found

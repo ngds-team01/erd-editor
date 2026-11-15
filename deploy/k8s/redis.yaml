@@ -45,6 +45,15 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+        # contracts 7.3: Redis CPU·네트워크 지표 (Prometheus가 9121에서 수집)
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.92.1@sha256:7fbc93d30f0f91eed1b2fe6968a956259cc5d260a984dd9071f1d1e9c2692ecd
+          env:
+            - name: REDIS_ADDR
+              value: redis://localhost:6379
+          ports:
+            - name: metrics
+              containerPort: 9121
   volumeClaimTemplates:
     - metadata:
         name: data

@@ -1,0 +1,122 @@
+{
+  "uid": "erd-editor",
+  "title": "ERD 편집기",
+  "schemaVersion": 41,
+  "graphTooltip": 1,
+  "time": {"from": "now-15m", "to": "now"},
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "접속자",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5},
+      "fieldConfig": {"defaults": {"unit": "none", "color": {"mode": "fixed", "fixedColor": "blue"}, "noValue": "-", "decimals": 0}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center"},
+      "targets": [
+        {"refId": "A", "expr": "sum(editor_ws_connections)"}
+      ]
+    },
+    {
+      "id": 2, "type": "stat", "title": "SHARED 비율 (파드 기준)",
+      "description": "파드마다 열린 문서 중 SHARED 비율. 여러 파드에 걸친 문서는 파드마다 한 번씩 센다",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 5},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "color": {"mode": "fixed", "fixedColor": "purple"}, "noValue": "-"}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center"},
+      "targets": [
+        {"refId": "A", "expr": "sum(editor_docs{mode=\"shared\"}) / (sum(editor_docs) > 0)"}
+      ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "동기화 지연 평균",
+      "description": "다른 파드의 UPDATE를 받기까지 걸린 시간 (now - sentAt)의 평균",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 5},
+      "fieldConfig": {"defaults": {"unit": "s", "color": {"mode": "fixed", "fixedColor": "orange"}, "noValue": "-"}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center"},
+      "targets": [
+        {"refId": "A", "expr": "sum(rate(editor_sync_latency_seconds_sum[$__rate_interval])) / (sum(rate(editor_sync_latency_seconds_count[$__rate_interval])) > 0)"}
+      ]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Redis 작업량",
+      "description": "전체 파드의 pubsub_out + pubsub_in + xadd (contracts 7.3)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 5},
+      "fieldConfig": {"defaults": {"unit": "ops", "color": {"mode": "fixed", "fixedColor": "green"}, "noValue": "-"}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center"},
+      "targets": [
+        {"refId": "A", "expr": "sum(rate(editor_messages_total{type=~\"pubsub_out|pubsub_in|xadd\"}[$__rate_interval]))"}
+      ]
+    },
+    {"id": 5, "type": "row", "title": "편집 서버", "collapsed": false, "gridPos": {"x": 0, "y": 5, "w": 24, "h": 1}, "panels": []},
+    {
+      "id": 6, "type": "timeseries", "title": "파드별 연결 수",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 6, "w": 12, "h": 8},
+      "fieldConfig": {
+        "defaults": {"unit": "none", "min": 0, "custom": {"lineWidth": 2, "fillOpacity": 15, "gradientMode": "opacity", "showPoints": "never"}, "decimals": 0},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "합계"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}, {"id": "custom.lineWidth", "value": 3}, {"id": "custom.fillOpacity", "value": 0}]}
+        ]
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "expr": "editor_ws_connections", "legendFormat": "{{pod}}"},
+        {"refId": "B", "expr": "sum(editor_ws_connections)", "legendFormat": "합계"}
+      ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "동기화 지연",
+      "description": "평균은 실측값, p50·p95·p99는 버킷(최소 10ms) 기준 추정값",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 6, "w": 12, "h": 8},
+      "fieldConfig": {
+        "defaults": {"unit": "s", "min": 0, "custom": {"lineWidth": 2, "fillOpacity": 15, "gradientMode": "opacity", "showPoints": "never"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "p50"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "light-orange"}}]},
+          {"matcher": {"id": "byName", "options": "p95"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]},
+          {"matcher": {"id": "byName", "options": "p99"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-orange"}}]},
+          {"matcher": {"id": "byName", "options": "평균"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}, {"id": "custom.lineWidth", "value": 3}, {"id": "custom.fillOpacity", "value": 0}]}
+        ]
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.5, sum by (le) (rate(editor_sync_latency_seconds_bucket[$__rate_interval]))) >= 0", "legendFormat": "p50"},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(editor_sync_latency_seconds_bucket[$__rate_interval]))) >= 0", "legendFormat": "p95"},
+        {"refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(editor_sync_latency_seconds_bucket[$__rate_interval]))) >= 0", "legendFormat": "p99"},
+        {"refId": "D", "expr": "sum(rate(editor_sync_latency_seconds_sum[$__rate_interval])) / (sum(rate(editor_sync_latency_seconds_count[$__rate_interval])) > 0)", "legendFormat": "평균"}
+      ]
+    },
+    {"id": 8, "type": "row", "title": "Redis", "collapsed": false, "gridPos": {"x": 0, "y": 14, "w": 24, "h": 1}, "panels": []},
+    {
+      "id": 9, "type": "timeseries", "title": "Redis 작업량 (종류별)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 15, "w": 12, "h": 8},
+      "fieldConfig": {
+        "defaults": {"unit": "ops", "min": 0, "custom": {"lineWidth": 2, "fillOpacity": 15, "gradientMode": "opacity", "showPoints": "never"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "pubsub_out"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {"matcher": {"id": "byName", "options": "pubsub_in"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "purple"}}]},
+          {"matcher": {"id": "byName", "options": "xadd"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}]},
+          {"matcher": {"id": "byName", "options": "합계"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}, {"id": "custom.lineWidth", "value": 3}, {"id": "custom.fillOpacity", "value": 0}]}
+        ]
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "expr": "sum by (type) (rate(editor_messages_total{type=~\"pubsub_out|pubsub_in|xadd\"}[$__rate_interval]))", "legendFormat": "{{type}}"},
+        {"refId": "B", "expr": "sum(rate(editor_messages_total{type=~\"pubsub_out|pubsub_in|xadd\"}[$__rate_interval]))", "legendFormat": "합계"}
+      ]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Redis CPU",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 15, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "custom": {"lineWidth": 2, "fillOpacity": 15, "gradientMode": "opacity", "showPoints": "never"}, "color": {"mode": "fixed", "fixedColor": "green"}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "expr": "rate(redis_cpu_sys_seconds_total[$__rate_interval]) + rate(redis_cpu_user_seconds_total[$__rate_interval])", "legendFormat": "CPU"}
+      ]
+    }
+  ]
+}
