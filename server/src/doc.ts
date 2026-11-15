@@ -7,6 +7,7 @@ import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import { WebSocket } from 'ws'
 import { countMessage, setStatsSource } from './metrics.js'
+import { DocPropagation, REMOTE_ORIGIN } from './propagation.js'
 
 const MESSAGE_SYNC = 0
 const MESSAGE_AWARENESS = 1
@@ -21,6 +22,8 @@ class SharedDoc extends Y.Doc {
   readonly awareness = new awarenessProtocol.Awareness(this)
   /** 연결 → 그 연결이 올린 awareness clientID 목록 (연결이 끊기면 커서를 지우는 데 씀) */
   readonly conns = new Map<WebSocket, Set<number>>()
+  /** 다른 파드와의 Pub/Sub 전파 (contracts 5.3) */
+  readonly propagation: DocPropagation
 
   constructor(name: string) {
     super({ gc: true })
@@ -33,36 +36,49 @@ class SharedDoc extends Y.Doc {
         added.forEach((id) => controlled.add(id))
         removed.forEach((id) => controlled.delete(id))
       }
+      const update = awarenessProtocol.encodeAwarenessUpdate(this.awareness, added.concat(updated, removed))
+      // 다른 파드에 먼저 발행한다. 아래 send()가 닫히는 중인 연결을 정리하다 마지막 연결이면
+      // 문서를 내리고(LEAVE) 이후 발행을 막기 때문이다. 다른 파드에서 받은 awareness는 다시 발행하지 않는다.
+      if (origin !== REMOTE_ORIGIN) this.propagation.onLocalAwareness(update)
       const encoder = encoding.createEncoder()
       encoding.writeVarUint(encoder, MESSAGE_AWARENESS)
-      encoding.writeVarUint8Array(
-        encoder,
-        awarenessProtocol.encodeAwarenessUpdate(this.awareness, added.concat(updated, removed)),
-      )
+      encoding.writeVarUint8Array(encoder, update)
       const message = encoding.toUint8Array(encoder)
       for (const conn of this.conns.keys()) send(this, conn, message)
     })
 
     this.on('update', (update: Uint8Array, origin: unknown) => {
+      // awareness와 같은 이유로 다른 파드에 먼저 발행한다. 다른 파드에서 받은 변경은 다시 발행하지 않는다.
+      // (SHARED일 때만 발행할지는 propagation이 판단)
+      if (origin !== REMOTE_ORIGIN) this.propagation.onLocalUpdate(update)
+      // TODO(백엔드, 2주차): 이 파드 클라이언트의 변경만 Streams doc:{docId}:log 기록(200ms 병합, contracts 6.2)
       const encoder = encoding.createEncoder()
       encoding.writeVarUint(encoder, MESSAGE_SYNC)
       syncProtocol.writeUpdate(encoder, update)
       const message = encoding.toUint8Array(encoder)
       // 보낸 연결에는 되돌려 보내지 않는다.
       for (const conn of this.conns.keys()) if (conn !== origin) send(this, conn, message)
-      // TODO(백엔드, 2주차): SHARED일 때만 Pub/Sub doc:{docId}:updates 발행, Streams doc:{docId}:log 기록(200ms 병합)
     })
+
+    this.propagation = new DocPropagation(this)
+  }
+
+  localAwarenessIds(): number[] {
+    return [...this.conns.values()].flatMap((ids) => [...ids])
   }
 }
 
 export const docs = new Map<string, SharedDoc>()
 
 // /metrics의 editor_ws_connections, editor_docs{mode} 값 (contracts 7.3)
-// 적응형 전파(#18)가 들어오기 전에는 모든 문서가 LOCAL이다.
 setStatsSource(() => {
   let connections = 0
-  for (const doc of docs.values()) connections += doc.conns.size
-  return { connections, local: docs.size, shared: 0 }
+  let shared = 0
+  for (const doc of docs.values()) {
+    connections += doc.conns.size
+    if (doc.propagation.shared) shared += 1
+  }
+  return { connections, local: docs.size - shared, shared }
 })
 
 function getDoc(name: string): SharedDoc {
@@ -81,8 +97,9 @@ function closeConn(doc: SharedDoc, conn: WebSocket) {
     awarenessProtocol.removeAwarenessStates(doc.awareness, [...controlled], null)
     console.log(`[doc:${doc.name}] 연결 종료, 남은 연결 ${doc.conns.size}`)
     if (doc.conns.size === 0) {
-      // 아직 영속화가 없으므로 마지막 연결이 끊기면 문서가 사라진다.
-      // TODO(백엔드, 2주차): contracts 5.3-6 순서대로 Streams flush → LEAVE 발행 → 구독 해제 후 내린다.
+      // contracts 5.3-6: (TODO 2주차: Streams flush) → LEAVE 발행 → 구독 해제 → 메모리에서 제거
+      // 아직 영속화가 없으므로 다른 파드도 문서를 열고 있지 않으면 내용이 사라진다.
+      doc.propagation.leave()
       doc.destroy()
       docs.delete(doc.name)
     }

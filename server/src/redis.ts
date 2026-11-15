@@ -1,5 +1,6 @@
-// Redis 연결. 명령(XADD·PUBLISH)용 연결 하나를 둔다.
-// Pub/Sub 구독은 구독 중인 연결에서 다른 명령을 못 쓰므로, 2주차에 redis.duplicate()로 따로 만든다.
+// Redis 연결 두 개.
+// - redis: 명령(PUBLISH·XADD)용
+// - subscriber: Pub/Sub 구독 전용. 구독 중인 연결에서는 다른 명령을 쓸 수 없어서 따로 둔다.
 import { Redis } from 'ioredis'
 import { config } from './config.js'
 
@@ -14,46 +15,72 @@ export const redis = new Redis(config.redisUrl, {
   maxRetriesPerRequest: 1,
 })
 
-// 끊긴 동안에는 close·reconnecting·error가 재시도마다 반복되므로,
-// 끊길 때 한 번, 다시 붙을 때 한 번만 로그를 남긴다.
-let connected = false
-let retries = 0
-let firstError = ''
+// 구독은 끊긴 동안 요청해도 다시 붙으면 처리되도록 쌓아 둔다.
+// 재연결 후에는 ioredis가 기존 구독 채널을 자동으로 다시 구독한다(autoResubscribe 기본값).
+export const subscriber = redis.duplicate({
+  enableOfflineQueue: true,
+  maxRetriesPerRequest: null,
+})
 
-function log(message: string) {
-  console.log(`[${config.podId}] Redis ${message}`)
+function watch(client: Redis, label: string) {
+  // 끊긴 동안에는 close·reconnecting·error가 재시도마다 반복되므로,
+  // 끊길 때 한 번, 다시 붙을 때 한 번만 로그를 남긴다.
+  let connected = false
+  let retries = 0
+  let firstError = ''
+  const log = (message: string) => console.log(`[${config.podId}] Redis${label} ${message}`)
+
+  client.on('ready', () => {
+    connected = true
+    log(retries > 0 ? `다시 연결됨 (${retries}번 재시도)` : `연결됨: ${config.redisUrl}`)
+    retries = 0
+    firstError = ''
+  })
+  client.on('close', () => {
+    if (!connected) return
+    connected = false
+    log('연결 끊김, 재접속 시도 중')
+  })
+  client.on('reconnecting', () => {
+    retries += 1
+  })
+  client.on('error', (err: NodeJS.ErrnoException) => {
+    // Node의 연결 거부 오류는 message가 비어 있을 수 있어 code를 대신 쓴다.
+    const reason = err.message || err.code || 'unknown'
+    if (firstError) return
+    firstError = reason
+    log(`오류: ${reason}`)
+  })
 }
 
-redis.on('ready', () => {
-  connected = true
-  log(retries > 0 ? `다시 연결됨 (${retries}번 재시도)` : `연결됨: ${config.redisUrl}`)
-  retries = 0
-  firstError = ''
-})
-redis.on('close', () => {
-  if (!connected) return
-  connected = false
-  log('연결 끊김, 재접속 시도 중')
-})
-redis.on('reconnecting', () => {
-  retries += 1
-})
-redis.on('error', (err: NodeJS.ErrnoException) => {
-  // Node의 연결 거부 오류는 message가 비어 있을 수 있어 code를 대신 쓴다.
-  const reason = err.message || err.code || 'unknown'
-  if (firstError) return
-  firstError = reason
-  log(`오류: ${reason}`)
-})
+watch(redis, '')
+watch(subscriber, '(구독)')
 
 export function isRedisReady(): boolean {
   return redis.status === 'ready'
 }
 
-export async function closeRedis(): Promise<void> {
-  try {
-    await redis.quit()
-  } catch {
-    redis.disconnect()
+/** 명령 연결과 구독 연결이 모두 준비될 때마다 호출한다 (처음 연결, 재연결 모두). */
+export function onRedisReady(listener: () => void) {
+  const check = () => {
+    if (redis.status === 'ready' && subscriber.status === 'ready') listener()
   }
+  redis.on('ready', check)
+  subscriber.on('ready', check)
+}
+
+async function quit(client: Redis) {
+  try {
+    await client.quit()
+  } catch {
+    client.disconnect()
+  }
+}
+
+export async function closeRedis(): Promise<void> {
+  // 구독 연결은 QUIT 없이 바로 끊는다. Redis가 끊긴 동안 쌓인 SUBSCRIBE 뒤에서 QUIT가 기다리면
+  // 종료가 강제 종료 시간(25초)까지 멈추기 때문이다. 구독 연결에는 마무리할 명령이 없다.
+  subscriber.disconnect()
+  // 명령 연결은 보내던 PUBLISH가 끝나도록 QUIT로 닫는다 (끊겨 있으면 quit()이 실패해 disconnect).
+  await quit(redis)
 }
