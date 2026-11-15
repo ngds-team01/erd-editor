@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -23,6 +23,7 @@ import {
 import type { RelationData, TableData } from '../model'
 import { RelationEdge } from './RelationEdge'
 import type { RelationEdgeType } from './RelationEdge'
+import type { RelationMode } from './relationMode'
 import { TableNode } from './TableNode'
 import type { TableNodeType } from './TableNode'
 
@@ -38,11 +39,17 @@ const DEFAULT_VIEWPORT = { x: 40, y: 40, zoom: 1 }
 const DRAG_WRITE_INTERVAL_MS = 50
 
 // Canvas가 읽고 쓰는 문서, onOpenTable: table node를 더블클릭하거나 ⋯ 버튼을 눌렀을 때 편집 패널을 열 함수
+// onClickTable: table node를 클릭했을 때 호출 (관계 모드면 부모·자식 선택, 아니면 패널 전환)
+// onOpenRelation: 관계선을 클릭했을 때 관계 편집 패널을 열 함수
+// relationMode: 관계 모드 상태 (아니면 null), onCancelRelation: Esc로 관계 모드를 끝낼 함수
 type CanvasProps = {
   doc: Y.Doc
   onOpenTable: (tableId: string) => void
-  onSelectTable: (tableId: string) => void
+  onClickTable: (tableId: string) => void
+  onOpenRelation: (relationId: string) => void
   onClosePanel: () => void
+  relationMode: RelationMode | null
+  onCancelRelation: () => void
 }
 
 // ReactFlow가 호출하는 드래그 이벤트 4개만 고른 type
@@ -159,6 +166,21 @@ function isCanvasTarget(target: EventTarget | null): boolean {
   )
 }
 
+// 글자를 입력하는 칸인지 확인, 패널 입력칸의 Esc는 입력 취소에 쓰이므로 관계 모드 취소에서 제외
+function isTextEntry(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLInputElement && target.type === 'text')
+  )
+}
+
+// 관계 모드 안내 문구, 부모를 고르기 전과 후
+function relationHint(mode: RelationMode): string {
+  return mode.parentId === null
+    ? '① 부모 테이블을 클릭하세요 (Esc 취소)'
+    : '② 자식 테이블을 클릭하세요 (같은 테이블이면 자기 참조, Esc 취소)'
+}
+
 // 드래그 이벤트를 Y.Doc 쓰기로 연결하는 함수 묶음을 생성
 function createDragHandlers(doc: Y.Doc): DragHandlers {
   // 마지막 쓰기 시각, 아래 함수들이 클로저로 계속 기억함
@@ -194,7 +216,15 @@ function createDragHandlers(doc: Y.Doc): DragHandlers {
 }
 
 // 최소 20%, 최대 250% 줌 적용 가능
-export function Canvas({ doc, onOpenTable, onSelectTable, onClosePanel }: CanvasProps) {
+export function Canvas({
+  doc,
+  onOpenTable,
+  onClickTable,
+  onOpenRelation,
+  onClosePanel,
+  relationMode,
+  onCancelRelation,
+}: CanvasProps) {
   // 함수를 넘겨 첫 렌더링 때만 문서 전체를 읽음
   const [nodes, setNodes] = useState(() =>
     readTables(doc).map((table) => toNode(table, doc, onOpenTable)),
@@ -233,10 +263,30 @@ export function Canvas({ doc, onOpenTable, onSelectTable, onClosePanel }: Canvas
     [doc],
   )
 
+  // 관계 모드에서 고른 부모 table id, 없으면 null
+  const parentId = relationMode?.parentId ?? null
+  // 고른 부모 node에만 rel-parent class를 붙여 테두리 표시, 나머지 node는 같은 객체 유지
+  // 화면에 넘길 때만 붙이므로 nodes 상태와 Y.Doc에는 남지 않음
+  const shownNodes = useMemo(
+    () =>
+      parentId === null
+        ? nodes
+        : nodes.map((node) => (node.id === parentId ? { ...node, className: 'rel-parent' } : node)),
+    [nodes, parentId],
+  )
+
   //키보드 처리 로직 - 캔버스 차원에서의 EventListener를 수행하도록 함
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.isComposing || event.repeat || !isCanvasTarget(event.target)) {
+      if (event.isComposing || event.repeat) {
+        return
+      }
+      // 관계 버튼을 누른 직후에는 focus가 툴바 버튼에 있으므로 캔버스 밖이어도 Esc로 관계 모드 취소
+      if (event.key === 'Escape' && relationMode && !isTextEntry(event.target)) {
+        onCancelRelation()
+        return
+      }
+      if (!isCanvasTarget(event.target)) {
         return
       }
       if (event.key === 'Escape') {
@@ -263,12 +313,13 @@ export function Canvas({ doc, onOpenTable, onSelectTable, onClosePanel }: Canvas
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [doc, getNodes, onClosePanel])
+  }, [doc, getNodes, onClosePanel, relationMode, onCancelRelation])
 
   return (
-    <div className="canvas-wrap">
+    <div className={relationMode ? 'canvas-wrap rel-mode' : 'canvas-wrap'}>
+      {relationMode && <div className="mode-hint">{relationHint(relationMode)}</div>}
       <ReactFlow
-        nodes={nodes}
+        nodes={shownNodes}
         onNodesChange={onNodesChange}
         edges={edges}
         onEdgesChange={onEdgesChange}
@@ -287,7 +338,9 @@ export function Canvas({ doc, onOpenTable, onSelectTable, onClosePanel }: Canvas
         // 더블클릭은 확대 대신 편집 패널 열기에 사용, node.id = table id
         zoomOnDoubleClick={false}
         onNodeDoubleClick={(_event, node) => onOpenTable(node.id)}
-        onNodeClick={(_event, node) => onSelectTable(node.id)}
+        onNodeClick={(_event, node) => onClickTable(node.id)}
+        // edge.id = relation id
+        onEdgeClick={(_event, edge) => onOpenRelation(edge.id)}
         onPaneClick={onClosePanel}
         // 객체의 필드 4개를 각각 prop으로 펼쳐서 전달
         {...dragHandlers}
