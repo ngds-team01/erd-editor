@@ -4,15 +4,30 @@
 // 버퍼는 문서 객체와 따로 둔다. Redis가 끊긴 동안 문서가 내려가도 재연결 후 기록할 수 있게.
 import * as Y from 'yjs'
 import { config } from './config.js'
+import { countMessage } from './metrics.js'
 import { isRedisReady, redis } from './redis.js'
 
 /** docId → 아직 기록하지 못한 업데이트 */
 const pending = new Map<string, Uint8Array[]>()
 /** docId → 예약된 flush 타이머 */
 const timers = new Map<string, NodeJS.Timeout>()
+/** 기록이 실패하고 있는 docId. 재시도마다 같은 경고가 쌓이지 않게 처음 한 번만 로그를 남긴다. */
+const failing = new Set<string>()
 
 export function logKey(docId: string): string {
   return `doc:${docId}:log`
+}
+
+/** FLUSH_INTERVAL_MS 뒤 flush를 예약한다. 이미 예약돼 있으면 그대로 둔다. */
+function schedule(docId: string) {
+  if (timers.has(docId)) return
+  timers.set(
+    docId,
+    setTimeout(() => {
+      timers.delete(docId)
+      void flush(docId)
+    }, config.flushIntervalMs),
+  )
 }
 
 /** 이 파드 클라이언트의 업데이트를 버퍼에 넣는다. Pub/Sub로 받은 변경은 넣지 않는다 (중복 기록 방지). */
@@ -23,15 +38,7 @@ export function record(docId: string, update: Uint8Array) {
     pending.set(docId, buffer)
   }
   buffer.push(update)
-  if (!timers.has(docId)) {
-    timers.set(
-      docId,
-      setTimeout(() => {
-        timers.delete(docId)
-        void flush(docId)
-      }, config.flushIntervalMs),
-    )
-  }
+  schedule(docId)
 }
 
 /**
@@ -63,11 +70,19 @@ export async function flush(docId: string): Promise<void> {
       'pod',
       config.podId,
     )
+    countMessage('xadd')
+    if (failing.delete(docId)) console.log(`[doc:${docId}] Streams 기록 다시 성공`)
   } catch (err) {
-    // 실패한 업데이트는 버퍼 앞에 되돌려 다음 flush에 다시 시도한다.
+    // 실패한 업데이트는 버퍼 앞에 되돌린다.
     // (Yjs 업데이트는 적용 순서와 상관없이 같은 결과가 되므로 순서가 바뀌어도 된다)
     pending.set(docId, [merged, ...(pending.get(docId) ?? [])])
-    console.warn(`[doc:${docId}] Streams 기록 실패, 재연결 후 다시 시도: ${(err as Error).message}`)
+    // 연결은 살아 있는데 명령만 실패하면(OOM, 타임아웃 등) ready 이벤트가 오지 않고,
+    // 문서가 이미 내려갔거나 편집이 더 없으면 record()도 오지 않는다. 그래서 직접 다시 예약한다.
+    schedule(docId)
+    if (!failing.has(docId)) {
+      failing.add(docId)
+      console.warn(`[doc:${docId}] Streams 기록 실패, ${config.flushIntervalMs}ms마다 다시 시도: ${(err as Error).message}`)
+    }
   }
 }
 
