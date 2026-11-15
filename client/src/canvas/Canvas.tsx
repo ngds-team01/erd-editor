@@ -1,8 +1,8 @@
-import { useCallback, useLayoutEffect, useState } from 'react'
-import { applyNodeChanges, Background, BackgroundVariant, ReactFlow } from '@xyflow/react'
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
+import { applyNodeChanges, Background, BackgroundVariant, ReactFlow, useReactFlow } from '@xyflow/react'
 import type { NodeChange, NodeTypes, ReactFlowProps, SnapGrid } from '@xyflow/react'
 import type * as Y from 'yjs'
-import { getTables, moveTables, observeTables, readTable, readTables } from '../model'
+import { deleteTables, getTables, moveTables, observeTables, readTable, readTables } from '../model'
 import type { TableData } from '../model'
 import { TableNode } from './TableNode'
 import type { TableNodeType } from './TableNode'
@@ -16,9 +16,12 @@ const DEFAULT_VIEWPORT = { x: 40, y: 40, zoom: 1 }
 // 드래그 중 Y.Doc에 position을 쓰는 최소 간격 (2.7)
 const DRAG_WRITE_INTERVAL_MS = 50
 
-// Canvas가 읽고 쓰는 문서
+// Canvas가 읽고 쓰는 문서, onOpenTable: table node를 더블클릭하거나 ⋯ 버튼을 눌렀을 때 편집 패널을 열 함수
 type CanvasProps = {
   doc: Y.Doc
+  onOpenTable: (tableId: string) => void
+  onSelectTable: (tableId: string) => void
+  onClosePanel: () => void
 }
 
 // ReactFlow가 호출하는 드래그 이벤트 4개만 고른 type
@@ -30,12 +33,12 @@ type DragHandlers = Pick<
 >
 
 // TableData를 React Flow - Node 형식으로 변환
-function toNode(table: TableData, doc: Y.Doc): TableNodeType {
+function toNode(table: TableData, doc: Y.Doc, onOpen: (tableId: string) => void): TableNodeType {
   return {
     id: table.id,
     type: 'table',
     position: table.position,
-    data: { table, doc },
+    data: { table, doc, onOpen },
   }
 }
 
@@ -44,6 +47,7 @@ function toNode(table: TableData, doc: Y.Doc): TableNodeType {
 function mergeTables(
   nodes: TableNodeType[],
   doc: Y.Doc,
+  onOpen: (tableId: string) => void,
   changedIds: Set<string>,
 ): TableNodeType[] {
   const tables = getTables(doc)
@@ -70,7 +74,7 @@ function mergeTables(
         ...node,
         // 드래그 중이면 화면 위치 유지, Y.Doc 값은 최대 50ms 과거라 쓰면 node가 뒤로 튐
         position: node.dragging ? node.position : table.position,
-        data: { table, doc },
+        data: { table, doc, onOpen },
       },
     ]
   })
@@ -78,10 +82,17 @@ function mergeTables(
   // Y.Doc에는 있지만 화면에 없는 id = 새로 추가된 table
   const added = [...changedIds].flatMap((id) => {
     const tableMap = tables.get(id)
-    return tableMap && !knownIds.has(id) ? [toNode(readTable(tableMap), doc)] : []
+    return tableMap && !knownIds.has(id) ? [toNode(readTable(tableMap), doc, onOpen)] : []
   })
 
   return [...updated, ...added]
+}
+
+function isCanvasTarget(target: EventTarget | null): boolean {
+  return (
+    target === document.body ||
+    (target instanceof Element && target.closest('.canvas-wrap') !== null)
+  )
 }
 
 // 드래그 이벤트를 Y.Doc 쓰기로 연결하는 함수 묶음을 생성
@@ -119,11 +130,14 @@ function createDragHandlers(doc: Y.Doc): DragHandlers {
 }
 
 // 최소 20%, 최대 250% 줌 적용 가능
-export function Canvas({ doc }: CanvasProps) {
+export function Canvas({ doc, onOpenTable, onSelectTable, onClosePanel }: CanvasProps) {
   // 함수를 넘겨 첫 렌더링 때만 문서 전체를 읽음
-  const [nodes, setNodes] = useState(() => readTables(doc).map((table) => toNode(table, doc)))
+  const [nodes, setNodes] = useState(() =>
+    readTables(doc).map((table) => toNode(table, doc, onOpenTable)),
+  )
   // lastWrite가 유지되도록 처음 한 번만 생성
   const [dragHandlers] = useState(() => createDragHandlers(doc))
+  const { getNodes } = useReactFlow<TableNodeType>()
 
   // 드래그 중 위치, 선택, 크기 측정 등 화면 쪽 변경을 nodes에 반영
   const onNodesChange = useCallback((changes: NodeChange<TableNodeType>[]) => {
@@ -135,10 +149,42 @@ export function Canvas({ doc }: CanvasProps) {
   useLayoutEffect(
     () =>
       observeTables(doc, (tableIds) => {
-        setNodes((current) => mergeTables(current, doc, tableIds))
+        setNodes((current) => mergeTables(current, doc, onOpenTable, tableIds))
       }),
-    [doc],
+    [doc, onOpenTable],
   )
+
+  //키보드 처리 로직 - 캔버스 차원에서의 EventListener를 수행하도록 함
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.isComposing || event.repeat || !isCanvasTarget(event.target)) {
+        return
+      }
+      if (event.key === 'Escape') {
+        onClosePanel()
+        return
+      }
+      if (event.key !== 'Delete' && event.key !== 'Backspace') {
+        return
+      }
+
+      const ids = getNodes()
+        .filter((node) => node.selected)
+        .map((node) => node.id)
+      if (ids.length === 0) {
+        return
+      }
+
+      event.preventDefault()
+      const message = `선택한 테이블 ${ids.length}개를 삭제할까요? 연결된 관계와 자동 생성된 FK 컬럼도 함께 삭제됩니다.`
+      if (window.confirm(message)) {
+        deleteTables(doc, ids)
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [doc, getNodes, onClosePanel])
 
   return (
     <div className="canvas-wrap">
@@ -154,6 +200,11 @@ export function Canvas({ doc }: CanvasProps) {
         // 기본 삭제키와 방향키 이동은 Y.Doc에 저장되지 않고 내 화면에만 적용되므로 끔
         deleteKeyCode={null}
         disableKeyboardA11y
+        // 더블클릭은 확대 대신 편집 패널 열기에 사용, node.id = table id
+        zoomOnDoubleClick={false}
+        onNodeDoubleClick={(_event, node) => onOpenTable(node.id)}
+        onNodeClick={(_event, node) => onSelectTable(node.id)}
+        onPaneClick={onClosePanel}
         // 객체의 필드 4개를 각각 prop으로 펼쳐서 전달
         {...dragHandlers}
       >
