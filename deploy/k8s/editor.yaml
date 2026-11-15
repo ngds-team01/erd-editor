@@ -1,0 +1,70 @@
+# contracts 7.4: HAProxy가 파드 목록을 찾는 headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: editor-headless
+  labels:
+    app: editor
+spec:
+  clusterIP: None
+  selector:
+    app: editor
+  ports:
+    - name: http
+      port: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: editor
+  labels:
+    app: editor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: editor
+  template:
+    metadata:
+      labels:
+        app: editor
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: editor
+          image: crdt-server:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: POD_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: REDIS_URL
+              value: redis://redis-0.redis:6379
+            - name: S3_ENDPOINT
+              value: http://minio:9000
+            - name: S3_BUCKET
+              value: erd-snapshots
+            - name: AWS_REGION
+              value: us-east-1
+          envFrom:
+            - secretRef:
+                name: s3-credentials
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
