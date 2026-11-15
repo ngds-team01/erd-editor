@@ -147,6 +147,28 @@ button {
   --xy-background-color: #fbfcfe;
 }
 
+.canvas-wrap .react-flow__edge-path.rel-line,
+.rel-mark {
+  fill: none;
+  stroke: #8792a8;
+  stroke-width: 1.6;
+}
+
+.canvas-wrap .react-flow__edge-path.rel-line.dashed {
+  stroke-dasharray: 6 4;
+}
+
+.canvas-wrap .react-flow__edge.selected .rel-line,
+.react-flow__edge.selected .rel-mark {
+  stroke: var(--primary);
+  stroke-width: 2.2;
+}
+
+.react-flow__handle.t-handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .table {
   min-width: 200px;
   width: max-content;

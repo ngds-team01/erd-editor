@@ -1,14 +1,35 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
-import { applyNodeChanges, Background, BackgroundVariant, ReactFlow, useReactFlow } from '@xyflow/react'
-import type { NodeChange, NodeTypes, ReactFlowProps, SnapGrid } from '@xyflow/react'
+import {
+  applyEdgeChanges,
+  applyNodeChanges,
+  Background,
+  BackgroundVariant,
+  ReactFlow,
+  useReactFlow,
+} from '@xyflow/react'
+import type { EdgeChange, EdgeTypes, NodeChange, NodeTypes, ReactFlowProps, SnapGrid } from '@xyflow/react'
 import type * as Y from 'yjs'
-import { deleteTables, getTables, moveTables, observeTables, readTable, readTables } from '../model'
-import type { TableData } from '../model'
+import {
+  deleteTables,
+  getTables,
+  isRelationDrawable,
+  moveTables,
+  observeRelations,
+  observeTables,
+  readRelations,
+  readTable,
+  readTables,
+} from '../model'
+import type { RelationData, TableData } from '../model'
+import { RelationEdge } from './RelationEdge'
+import type { RelationEdgeType } from './RelationEdge'
 import { TableNode } from './TableNode'
 import type { TableNodeType } from './TableNode'
 
 // key: node의 type, value: node Component(TableNode)
 const nodeTypes: NodeTypes = { table: TableNode }
+// key: edge의 type, value: edge Component(RelationEdge)
+const edgeTypes: EdgeTypes = { relation: RelationEdge }
 //가로, 세로 간격
 const SNAP_GRID: SnapGrid = [10, 10]
 //처음 화면 배율 : 1, 캔버스 좌표 (0, 0) = 화면 (40, 40)
@@ -88,6 +109,49 @@ function mergeTables(
   return [...updated, ...added]
 }
 
+// RelationData를 React Flow - Edge 형식으로 변환, source = 부모, target = 자식
+function toEdge(relation: RelationData): RelationEdgeType {
+  return {
+    id: relation.id,
+    type: 'relation',
+    source: relation.fromTable,
+    target: relation.toTable,
+    data: { relation },
+  }
+}
+
+// 화면에 그리는 값이 모두 같은지 비교
+function sameRelation(a: RelationData, b: RelationData): boolean {
+  return (
+    a.fromTable === b.fromTable &&
+    a.toTable === b.toTable &&
+    a.toColumn === b.toColumn &&
+    a.cardinality === b.cardinality &&
+    a.identifying === b.identifying
+  )
+}
+
+// Y.Doc의 relation 전체를 다시 읽고 고아 관계를 걸러 edge 배열을 만듦 (2.7)
+// relation 수가 적어 전체를 다시 읽고, 안 바뀐 edge는 같은 객체를 유지해 memo가 다시 그리지 않게 함
+function syncEdges(edges: RelationEdgeType[], doc: Y.Doc): RelationEdgeType[] {
+  // 이미 화면에 있는 edge, key = relation id
+  const known = new Map(edges.map((edge) => [edge.id, edge]))
+  const next = readRelations(doc)
+    .filter((relation) => isRelationDrawable(doc, relation))
+    .map((relation) => {
+      const edge = known.get(relation.id)
+      if (edge?.data && sameRelation(edge.data.relation, relation)) {
+        return edge
+      }
+      // 바뀐 relation은 새 객체로 만들되, React Flow가 관리하는 선택 여부는 유지
+      return { ...toEdge(relation), selected: edge?.selected }
+    })
+
+  // 개수와 객체가 모두 같으면 이전 배열을 그대로 돌려줘 다시 그리지 않음 (드래그 중 table 변경마다 호출됨)
+  const unchanged = next.length === edges.length && next.every((edge, i) => edge === edges[i])
+  return unchanged ? edges : next
+}
+
 function isCanvasTarget(target: EventTarget | null): boolean {
   return (
     target === document.body ||
@@ -135,6 +199,8 @@ export function Canvas({ doc, onOpenTable, onSelectTable, onClosePanel }: Canvas
   const [nodes, setNodes] = useState(() =>
     readTables(doc).map((table) => toNode(table, doc, onOpenTable)),
   )
+  // 관계선, 첫 렌더링 때만 문서 전체를 읽음
+  const [edges, setEdges] = useState(() => syncEdges([], doc))
   // lastWrite가 유지되도록 처음 한 번만 생성
   const [dragHandlers] = useState(() => createDragHandlers(doc))
   const { getNodes } = useReactFlow<TableNodeType>()
@@ -144,14 +210,27 @@ export function Canvas({ doc, onOpenTable, onSelectTable, onClosePanel }: Canvas
     setNodes((current) => applyNodeChanges(changes, current))
   }, [])
 
+  // edge 선택 등 화면 쪽 변경을 edges에 반영
+  const onEdgesChange = useCallback((changes: EdgeChange<RelationEdgeType>[]) => {
+    setEdges((current) => applyEdgeChanges(changes, current))
+  }, [])
+
   // Y.Doc 변경을 구독해 nodes에 반영, 반환된 해제 함수는 컴포넌트가 사라질 때 React가 호출
   // useEffect가 아닌 이유: 첫 읽기와 구독 시작 사이에 도착한 변경을 놓치지 않기 위함
+  // table이 바뀌면 고아 필터도 다시 적용 (table·FK column이 지워지면 그 관계선을 숨김)
   useLayoutEffect(
     () =>
       observeTables(doc, (tableIds) => {
         setNodes((current) => mergeTables(current, doc, onOpenTable, tableIds))
+        setEdges((current) => syncEdges(current, doc))
       }),
     [doc, onOpenTable],
+  )
+
+  // relation 추가·수정·삭제를 구독해 edges에 반영
+  useLayoutEffect(
+    () => observeRelations(doc, () => setEdges((current) => syncEdges(current, doc))),
+    [doc],
   )
 
   //키보드 처리 로직 - 캔버스 차원에서의 EventListener를 수행하도록 함
@@ -191,7 +270,12 @@ export function Canvas({ doc, onOpenTable, onSelectTable, onClosePanel }: Canvas
       <ReactFlow
         nodes={nodes}
         onNodesChange={onNodesChange}
+        edges={edges}
+        onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        // Handle을 끌어 관계를 만드는 기능은 쓰지 않음 (관계는 툴바의 관계 모드로 생성)
+        nodesConnectable={false}
         snapToGrid
         snapGrid={SNAP_GRID}
         minZoom={0.2}
