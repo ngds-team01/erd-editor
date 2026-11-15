@@ -23,4 +23,6 @@ export const config = {
   propagationMode: process.env.PROPAGATION_MODE === 'broadcast' ? 'broadcast' : 'adaptive',
   // contracts 5.3-5: SHARED 파드의 HEARTBEAT 주기. 피어 타임아웃은 3배(기본 15초)
   heartbeatIntervalMs: positiveInt('HEARTBEAT_INTERVAL_MS', 5000),
+  // contracts 6.2: 이 시간 동안 모은 업데이트를 합쳐 XADD 1회
+  flushIntervalMs: positiveInt('FLUSH_INTERVAL_MS', 200),
 }

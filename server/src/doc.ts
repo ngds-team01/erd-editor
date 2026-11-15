@@ -8,6 +8,7 @@ import * as decoding from 'lib0/decoding'
 import { WebSocket } from 'ws'
 import { countMessage, setStatsSource } from './metrics.js'
 import { DocPropagation, REMOTE_ORIGIN } from './propagation.js'
+import { flush as flushStream, record as recordStream } from './streams.js'
 
 const MESSAGE_SYNC = 0
 const MESSAGE_AWARENESS = 1
@@ -51,7 +52,8 @@ class SharedDoc extends Y.Doc {
       // awareness와 같은 이유로 다른 파드에 먼저 발행한다. 다른 파드에서 받은 변경은 다시 발행하지 않는다.
       // (SHARED일 때만 발행할지는 propagation이 판단)
       if (origin !== REMOTE_ORIGIN) this.propagation.onLocalUpdate(update)
-      // TODO(백엔드, 2주차): 이 파드 클라이언트의 변경만 Streams doc:{docId}:log 기록(200ms 병합, contracts 6.2)
+      // contracts 6.2: 이 파드 클라이언트(WebSocket)가 보낸 변경만 기록한다. 다른 파드에서 받은 변경은 그 파드가 기록한다.
+      if (origin instanceof WebSocket) recordStream(this.name, update)
       const encoder = encoding.createEncoder()
       encoding.writeVarUint(encoder, MESSAGE_SYNC)
       syncProtocol.writeUpdate(encoder, update)
@@ -97,8 +99,10 @@ function closeConn(doc: SharedDoc, conn: WebSocket) {
     awarenessProtocol.removeAwarenessStates(doc.awareness, [...controlled], null)
     console.log(`[doc:${doc.name}] 연결 종료, 남은 연결 ${doc.conns.size}`)
     if (doc.conns.size === 0) {
-      // contracts 5.3-6: (TODO 2주차: Streams flush) → LEAVE 발행 → 구독 해제 → 메모리에서 제거
-      // 아직 영속화가 없으므로 다른 파드도 문서를 열고 있지 않으면 내용이 사라진다.
+      // contracts 5.3-6: Streams flush → LEAVE 발행 → 구독 해제 → 메모리에서 제거
+      // XADD와 PUBLISH(LEAVE)는 같은 Redis 연결로 나가므로 flush를 기다리지 않아도 이 순서가 지켜진다.
+      // Redis가 끊겨 있으면 버퍼는 streams.ts에 남았다가 재연결 후 기록된다.
+      void flushStream(doc.name)
       doc.propagation.leave()
       doc.destroy()
       docs.delete(doc.name)
