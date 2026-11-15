@@ -5,6 +5,7 @@ import { setupConnection } from './doc.js'
 import { register } from './metrics.js'
 import { leaveAll } from './propagation.js'
 import { closeRedis } from './redis.js'
+import { flushAll } from './streams.js'
 
 // docs/contracts.md 4.1: ws://host/ws/{docId}, docId는 영문·숫자·_- 1~64자
 const WS_PREFIX = '/ws/'
@@ -75,7 +76,7 @@ server.listen(config.port, () => {
   console.log(`[${config.podId}] 편집 서버 시작 :${config.port} (ws://localhost:${config.port}/ws/{docId})`)
 })
 
-// contracts 7.2 종료 순서: /readyz 503 → 대기 → (Streams flush, #20 머지 후) → 1012로 연결 종료 → LEAVE → 종료
+// contracts 7.2 종료 순서: /readyz 503 → 대기 → Streams flush → 1012로 연결 종료 → LEAVE → 종료
 async function shutdown(signal: string, drainMs: number) {
   if (shuttingDown) return
   shuttingDown = true
@@ -87,7 +88,9 @@ async function shutdown(signal: string, drainMs: number) {
   }, SHUTDOWN_FORCE_EXIT_MS).unref()
 
   await new Promise((resolve) => setTimeout(resolve, drainMs))
-  // TODO(#20 머지 후): 여기서 모든 문서의 Streams 버퍼 flush
+  // 아직 기록하지 않은 편집을 연결을 닫기 전에 모두 기록한다. Redis가 끊겨 있으면 기록하지 못하고 넘어간다.
+  // (이 뒤 연결이 닫힐 때 들어온 편집은 문서를 내리며 한 번 더 flush된다)
+  await flushAll()
   for (const ws of wss.clients) ws.close(CLOSE_SERVICE_RESTART, 'server restarting')
   // 연결이 닫히는 이벤트를 기다리지 않고 바로 문서별 LEAVE를 보낸다. 이 파드 사용자들의 커서 삭제도 같이 보낸다.
   // 이후 연결이 닫히며 생기는 발행은 막힌다. Redis 종료(QUIT)보다 먼저 보내야 상대 파드가 바로 LOCAL로 돌아간다.
