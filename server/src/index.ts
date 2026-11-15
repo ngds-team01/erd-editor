@@ -3,6 +3,7 @@ import { WebSocketServer } from 'ws'
 import { config } from './config.js'
 import { setupConnection } from './doc.js'
 import { register } from './metrics.js'
+import { leaveAll } from './propagation.js'
 import { closeRedis } from './redis.js'
 
 // docs/contracts.md 4.1: ws://host/ws/{docId}, docId는 영문·숫자·_- 1~64자
@@ -74,7 +75,7 @@ server.listen(config.port, () => {
   console.log(`[${config.podId}] 편집 서버 시작 :${config.port} (ws://localhost:${config.port}/ws/{docId})`)
 })
 
-// contracts 7.2 종료 순서: /readyz 503 → 대기 → (2주차: Streams flush) → 1012로 연결 종료 → 종료
+// contracts 7.2 종료 순서: /readyz 503 → 대기 → (Streams flush, #20 머지 후) → 1012로 연결 종료 → LEAVE → 종료
 async function shutdown(signal: string, drainMs: number) {
   if (shuttingDown) return
   shuttingDown = true
@@ -86,8 +87,11 @@ async function shutdown(signal: string, drainMs: number) {
   }, SHUTDOWN_FORCE_EXIT_MS).unref()
 
   await new Promise((resolve) => setTimeout(resolve, drainMs))
-  // TODO(백엔드, 2주차): 모든 문서의 Streams 버퍼 flush, 문서별 LEAVE 발행
+  // TODO(#20 머지 후): 여기서 모든 문서의 Streams 버퍼 flush
   for (const ws of wss.clients) ws.close(CLOSE_SERVICE_RESTART, 'server restarting')
+  // 연결이 닫히는 이벤트를 기다리지 않고 바로 문서별 LEAVE를 보낸다. 이 파드 사용자들의 커서 삭제도 같이 보낸다.
+  // 이후 연결이 닫히며 생기는 발행은 막힌다. Redis 종료(QUIT)보다 먼저 보내야 상대 파드가 바로 LOCAL로 돌아간다.
+  leaveAll()
   server.close(async () => {
     await closeRedis()
     process.exit(0)
