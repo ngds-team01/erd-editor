@@ -179,6 +179,22 @@ export function otherUsers(peers: Peer[], selfId: string | null): PresenceUser[]
   return users
 }
 
+// 내 편집 대상을 정함 (3)
+// 1순위: 패널이 열린 table, 패널 안 column 영역에 포커스가 있으면 그 column도 함께
+// 2순위: 패널이 없으면 하나만 선택한 table (여러 개를 고르면 하나로 정할 수 없어 null)
+// focusedColumn: 패널에서 포커스가 있는 column, 다른 table의 것이면 무시
+export function pickEditing(
+  panelTableId: string | null,
+  focusedColumn: Editing | null,
+  selectedTableIds: readonly string[],
+): Editing | null {
+  if (panelTableId !== null) {
+    const columnId = focusedColumn?.tableId === panelTableId ? focusedColumn.columnId : null
+    return { tableId: panelTableId, columnId }
+  }
+  return selectedTableIds.length === 1 ? { tableId: selectedTableIds[0], columnId: null } : null
+}
+
 // 두 editing 값이 같은지 비교
 function sameEditing(a: Editing | null, b: Editing | null): boolean {
   return a?.tableId === b?.tableId && a?.columnId === b?.columnId

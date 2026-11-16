@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -7,7 +7,15 @@ import {
   ReactFlow,
   useReactFlow,
 } from '@xyflow/react'
-import type { EdgeChange, EdgeTypes, NodeChange, NodeTypes, ReactFlowProps, SnapGrid } from '@xyflow/react'
+import type {
+  EdgeChange,
+  EdgeTypes,
+  NodeChange,
+  NodeTypes,
+  OnSelectionChangeFunc,
+  ReactFlowProps,
+  SnapGrid,
+} from '@xyflow/react'
 import type * as Y from 'yjs'
 import {
   deleteTables,
@@ -21,6 +29,8 @@ import {
   readTables,
 } from '../model'
 import type { RelationData, TableData } from '../model'
+import { collectEditors } from '../sync/presence'
+import type { Peer, PeerStore } from '../sync/presence'
 import { RelationEdge } from './RelationEdge'
 import type { RelationEdgeType } from './RelationEdge'
 import type { RelationMode } from './relationMode'
@@ -42,6 +52,7 @@ const DRAG_WRITE_INTERVAL_MS = 50
 // onClickTable: table node를 클릭했을 때 호출 (관계 모드면 부모·자식 선택, 아니면 패널 전환)
 // onOpenRelation: 관계선을 클릭했을 때 관계 편집 패널을 열 함수
 // relationMode: 관계 모드 상태 (아니면 null), onCancelRelation: Esc로 관계 모드를 끝낼 함수
+// onSelectTables: 선택한 table이 바뀔 때 id 목록을 알림, peers: 다른 사용자의 편집 중 표시에 쓸 목록 (3)
 type CanvasProps = {
   doc: Y.Doc
   onOpenTable: (tableId: string) => void
@@ -50,6 +61,8 @@ type CanvasProps = {
   onClosePanel: () => void
   relationMode: RelationMode | null
   onCancelRelation: () => void
+  onSelectTables: (tableIds: string[]) => void
+  peers: PeerStore
 }
 
 // ReactFlow가 호출하는 드래그 이벤트 4개만 고른 type
@@ -174,6 +187,29 @@ function isTextEntry(target: EventTarget | null): boolean {
   )
 }
 
+// 화면에 넘길 node에 관계 모드 부모 표시와 다른 사용자의 편집 중 표시를 덧붙임
+// nodes 상태와 Y.Doc에는 남지 않고, 덧붙일 것이 없는 node는 같은 객체를 유지해 memo가 다시 그리지 않게 함
+function decorateNodes(
+  nodes: TableNodeType[],
+  parentId: string | null,
+  editors: Map<string, Peer[]>,
+): TableNodeType[] {
+  if (parentId === null && editors.size === 0) {
+    return nodes
+  }
+  return nodes.map((node) => {
+    const nodeEditors = editors.get(node.id)
+    if (node.id !== parentId && !nodeEditors) {
+      return node
+    }
+    return {
+      ...node,
+      className: node.id === parentId ? 'rel-parent' : node.className,
+      data: nodeEditors ? { ...node.data, editors: nodeEditors } : node.data,
+    }
+  })
+}
+
 // 관계 모드 안내 문구, 부모를 고르기 전과 후
 function relationHint(mode: RelationMode): string {
   return mode.parentId === null
@@ -224,6 +260,8 @@ export function Canvas({
   onClosePanel,
   relationMode,
   onCancelRelation,
+  onSelectTables,
+  peers,
 }: CanvasProps) {
   // 함수를 넘겨 첫 렌더링 때만 문서 전체를 읽음
   const [nodes, setNodes] = useState(() =>
@@ -265,14 +303,19 @@ export function Canvas({
 
   // 관계 모드에서 고른 부모 table id, 없으면 null
   const parentId = relationMode?.parentId ?? null
-  // 고른 부모 node에만 rel-parent class를 붙여 테두리 표시, 나머지 node는 같은 객체 유지
-  // 화면에 넘길 때만 붙이므로 nodes 상태와 Y.Doc에는 남지 않음
+  // 다른 사용자 목록을 구독해 table별 편집 중인 사용자로 묶음 (3)
+  const peerList = useSyncExternalStore(peers.subscribe, peers.getPeers)
+  const editors = useMemo(() => collectEditors(peerList), [peerList])
+  // 고른 부모 node에는 rel-parent class, 다른 사용자가 편집 중인 node에는 editors를 붙여 화면에 넘김
   const shownNodes = useMemo(
-    () =>
-      parentId === null
-        ? nodes
-        : nodes.map((node) => (node.id === parentId ? { ...node, className: 'rel-parent' } : node)),
-    [nodes, parentId],
+    () => decorateNodes(nodes, parentId, editors),
+    [nodes, parentId, editors],
+  )
+
+  // 선택이 바뀌면 선택한 table id 목록을 App에 알림, React Flow 요구대로 같은 함수를 유지
+  const handleSelectionChange = useCallback<OnSelectionChangeFunc<TableNodeType, RelationEdgeType>>(
+    ({ nodes: selected }) => onSelectTables(selected.map((node) => node.id)),
+    [onSelectTables],
   )
 
   //키보드 처리 로직 - 캔버스 차원에서의 EventListener를 수행하도록 함
@@ -342,6 +385,7 @@ export function Canvas({
         // edge.id = relation id
         onEdgeClick={(_event, edge) => onOpenRelation(edge.id)}
         onPaneClick={onClosePanel}
+        onSelectionChange={handleSelectionChange}
         // 객체의 필드 4개를 각각 prop으로 펼쳐서 전달
         {...dragHandlers}
       >

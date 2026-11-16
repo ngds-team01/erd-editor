@@ -9,6 +9,7 @@ import {
   loadUser,
   otherUsers,
   parseUser,
+  pickEditing,
   renameUser,
   saveUser,
   setEditing,
@@ -220,5 +221,27 @@ describe('otherUsers', () => {
       1,
     )
     expect(otherUsers(peers, alice.id).map((user) => user.id)).toEqual(['u-bob', 'u-carol'])
+  })
+})
+
+describe('pickEditing', () => {
+  it('패널이 열려 있으면 그 table, 포커스가 있는 column이 같은 table이면 함께', () => {
+    expect(pickEditing('t1', { tableId: 't1', columnId: 'c1' }, ['t2'])).toEqual({
+      tableId: 't1',
+      columnId: 'c1',
+    })
+  })
+
+  it('포커스가 다른 table의 column이면 column은 무시', () => {
+    expect(pickEditing('t1', { tableId: 't2', columnId: 'c9' }, [])).toEqual({
+      tableId: 't1',
+      columnId: null,
+    })
+  })
+
+  it('패널이 없으면 하나만 선택한 table, 여러 개거나 없으면 null', () => {
+    expect(pickEditing(null, null, ['t2'])).toEqual({ tableId: 't2', columnId: null })
+    expect(pickEditing(null, null, ['t1', 't2'])).toBeNull()
+    expect(pickEditing(null, null, [])).toBeNull()
   })
 })
