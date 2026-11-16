@@ -1,4 +1,5 @@
 import { Fragment, memo } from 'react'
+import { Handle, Position } from '@xyflow/react'
 import type { Node, NodeProps } from '@xyflow/react'
 import type * as Y from 'yjs'
 import { addNextColumn } from '../model'
@@ -90,6 +91,10 @@ function TableNodeView({ data, selected }: NodeProps<TableNodeType>) {
 
   return (
     <div className={selected ? 'table sel' : 'table'}>
+      {/* 숨긴 Handle: React Flow는 edge 양 끝에 Handle이 있어야 edge를 그림 */}
+      {/* 실제 선의 위치는 RelationEdge가 table 사각형으로 계산, 드래그로 연결하는 기능은 끔 */}
+      <Handle type="target" position={Position.Left} className="t-handle" isConnectable={false} />
+      <Handle type="source" position={Position.Right} className="t-handle" isConnectable={false} />
       <div
         className={isLightBackground(table.color) ? 't-head light' : 't-head'}
         style={{ background: table.color }}
