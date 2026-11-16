@@ -68,7 +68,7 @@
     },
     {
       "id": 7, "type": "timeseries", "title": "동기화 지연",
-      "description": "평균은 실측값, p50·p95·p99는 버킷(최소 10ms) 기준 추정값",
+      "description": "평균은 실측값, p50·p95·p99는 버킷 기준 추정값",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"x": 12, "y": 6, "w": 12, "h": 8},
       "fieldConfig": {
