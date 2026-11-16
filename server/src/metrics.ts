@@ -28,11 +28,14 @@ export function countMessage(type: MessageKind) {
   messagesTotal.inc({ type })
 }
 
-/** 다른 파드의 UPDATE를 받았을 때 now - sentAt */
+/**
+ * 다른 파드의 UPDATE를 받았을 때 now - sentAt.
+ * 클러스터 안 지연은 대부분 1ms 안쪽이라 10ms 미만 버킷이 없으면 분위수가 첫 버킷 보간값(5·9.5·9.9ms)으로만 나온다.
+ */
 export const syncLatency = new Histogram({
   name: 'editor_sync_latency_seconds',
   help: 'Pub/Sub로 받은 다른 파드 UPDATE의 지연 (now - sentAt)',
-  buckets: [0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2],
+  buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2],
   registers: [register],
 })
 
