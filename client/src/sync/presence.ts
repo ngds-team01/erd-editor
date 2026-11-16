@@ -46,6 +46,9 @@ export type Peer = {
   editing: Editing | null 
 }
 
+// awareness 'change' 이벤트가 넘겨주는 값: 상태가 새로 생긴·바뀐·사라진 clientId 목록
+type AwarenessChanges = { added: number[]; updated: number[]; removed: number[] }
+
 // 사용자 정보를 저장할 곳, 테스트에서 가짜 저장소를 넣을 수 있게 필요한 함수 2개만 요구
 export type UserStorage = Pick<Storage, 'getItem' | 'setItem'>
 
@@ -143,6 +146,39 @@ export function initPresence(awareness: Awareness, user: PresenceUser): void {
   awareness.setLocalState(state)
 }
 
+// 내 이름을 바꿈: 다듬은 이름이 비었거나 지금과 같으면 무시
+// 바뀌면 awareness의 user 필드를 통째로 바꿔 다른 사용자에게 알리고, 새로고침해도 남도록 sessionStorage에도 저장
+// user를 통째로 바꾸는 이유: awareness는 필드 단위로만 바꿀 수 있어 user.name만 따로 바꿀 수 없음
+export function renameUser(
+  awareness: Awareness,
+  name: string,
+  storage: UserStorage | null = browserStorage(),
+): void {
+  const user = parseUser(awareness.getLocalState()?.user)
+  const normalized = normalizeUserName(name)
+  if (!user || normalized === null || normalized === user.name) {
+    return
+  }
+
+  const renamed: PresenceUser = { ...user, name: normalized }
+  awareness.setLocalStateField('user', renamed)
+  saveUser(renamed, storage)
+}
+
+// 툴바에 보여줄 다른 사용자: 같은 사람이 탭을 여러 개 열면(탭 복제 등) 한 번만 표시
+// 나와 user.id가 같은 접속(내 다른 탭)도 빼서, 툴바에는 다른 사람만 남김
+export function otherUsers(peers: Peer[], selfId: string | null): PresenceUser[] {
+  const seen = new Set<string>(selfId === null ? [] : [selfId])
+  const users: PresenceUser[] = []
+  for (const { user } of peers) {
+    if (!seen.has(user.id)) {
+      seen.add(user.id)
+      users.push(user)
+    }
+  }
+  return users
+}
+
 // 두 editing 값이 같은지 비교
 function sameEditing(a: Editing | null, b: Editing | null): boolean {
   return a?.tableId === b?.tableId && a?.columnId === b?.columnId
@@ -190,23 +226,35 @@ export function collectEditors(peers: Peer[]): Map<string, Peer[]> {
   return editors
 }
 
-// React의 useSyncExternalStore로 구독할 수 있는 다른 사용자 목록
+// React의 useSyncExternalStore로 구독할 수 있는 다른 사용자 목록과 내 사용자 정보
 // subscribe: 목록이 바뀔 때 호출할 함수를 등록하고 해제 함수를 돌려줌, getPeers: 현재 목록
+// getSelf: 내 사용자 정보 (툴바의 내 이름 칸), 상태를 아직 올리지 않았으면 null
 export type PeerStore = {
   subscribe: (listener: () => void) => () => void
   getPeers: () => Peer[]
+  getSelf: () => PresenceUser | null
 }
 
 // awareness 변경을 받아 다른 사용자 목록을 다시 만드는 저장소 생성
 // getPeers는 바뀌지 않았으면 같은 배열을 돌려줘야 React가 불필요하게 다시 그리지 않으므로 목록을 보관해 둠
 export function createPeerStore(awareness: Awareness): PeerStore {
   let peers = collectPeers(awareness.getStates(), awareness.clientID)
+  let self = parseUser(awareness.getLocalState()?.user)
   const listeners = new Set<() => void>()
 
   // 'change': 상태 내용이 실제로 바뀌었을 때만 발생 ('update'는 15초마다 같은 값을 다시 보낼 때도 발생)
-  // 접속 끊김·30초 응답 없음으로 사용자가 빠질 때도 발생
-  awareness.on('change', () => {
-    peers = collectPeers(awareness.getStates(), awareness.clientID)
+  // 접속 끊김·30초 응답 없음으로 사용자가 빠질 때, 내가 이름을 바꿀 때도 발생
+  // 인자: 상태가 바뀐 clientId 목록 (새로 들어옴, 바뀜, 나감)
+  awareness.on('change', ({ added, updated, removed }: AwarenessChanges) => {
+    // 바뀐 게 내 상태뿐이면(이름 변경, 편집 대상 변경) 다른 사용자 목록은 이전 배열 그대로 둠
+    if ([...added, ...updated, ...removed].some((clientId) => clientId !== awareness.clientID)) {
+      peers = collectPeers(awareness.getStates(), awareness.clientID)
+    }
+    // 내 이름·색이 그대로면 이전 객체를 유지해 내 이름 칸을 다시 그리지 않음
+    const nextSelf = parseUser(awareness.getLocalState()?.user)
+    if (nextSelf?.name !== self?.name || nextSelf?.color !== self?.color || nextSelf?.id !== self?.id) {
+      self = nextSelf
+    }
     listeners.forEach((listener) => listener())
   })
 
@@ -216,5 +264,6 @@ export function createPeerStore(awareness: Awareness): PeerStore {
       return () => listeners.delete(listener)
     },
     getPeers: () => peers,
+    getSelf: () => self,
   }
 }

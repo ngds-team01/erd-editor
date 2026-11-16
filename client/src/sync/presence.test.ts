@@ -7,7 +7,9 @@ import {
   createPeerStore,
   initPresence,
   loadUser,
+  otherUsers,
   parseUser,
+  renameUser,
   saveUser,
   setEditing,
   USER_COLORS,
@@ -161,5 +163,62 @@ describe('awareness 2개 사이 전달', () => {
     mine.setLocalState(null)
     relay(mine, theirs)
     expect(store.getPeers()).toEqual([])
+  })
+})
+
+describe('renameUser', () => {
+  it('바꾼 이름이 상대 목록과 내 정보에 반영되고 저장소에도 남음', () => {
+    const mine = newAwareness()
+    const theirs = newAwareness()
+    const myStore = createPeerStore(mine)
+    const theirStore = createPeerStore(theirs)
+    const storage = memoryStorage()
+    initPresence(mine, alice)
+
+    renameUser(mine, '  새 이름  ', storage)
+    relay(mine, theirs)
+    expect(myStore.getSelf()).toEqual({ ...alice, name: '새 이름' })
+    expect(theirStore.getPeers()[0].user.name).toBe('새 이름')
+    expect(loadUser(storage)).toEqual({ ...alice, name: '새 이름' })
+  })
+
+  it('빈 이름이나 지금과 같은 이름이면 보내지 않음', () => {
+    const mine = newAwareness()
+    initPresence(mine, alice)
+    let updates = 0
+    mine.on('update', () => updates++)
+
+    renameUser(mine, '   ', memoryStorage())
+    renameUser(mine, alice.name, memoryStorage())
+    expect(updates).toBe(0)
+  })
+
+  it('내 상태만 바뀌면 다른 사용자 목록은 같은 배열을 유지', () => {
+    const mine = newAwareness()
+    const theirs = newAwareness()
+    const myStore = createPeerStore(mine)
+    initPresence(theirs, bob)
+    relay(theirs, mine)
+    initPresence(mine, alice)
+    const before = myStore.getPeers()
+
+    renameUser(mine, '새 이름', memoryStorage())
+    setEditing(mine, { tableId: 't1', columnId: null })
+    expect(myStore.getPeers()).toBe(before)
+  })
+})
+
+describe('otherUsers', () => {
+  it('같은 사람의 여러 접속은 한 번만, 나와 같은 id는 제외', () => {
+    const peers = collectPeers(
+      new Map<number, unknown>([
+        [2, { user: bob }],
+        [3, { user: bob }],
+        [4, { user: alice }],
+        [5, { user: { ...bob, id: 'u-carol', name: '캐롤' } }],
+      ]),
+      1,
+    )
+    expect(otherUsers(peers, alice.id).map((user) => user.id)).toEqual(['u-bob', 'u-carol'])
   })
 })
