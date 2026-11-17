@@ -1,0 +1,25 @@
+{
+  "name": "crdt-loadtest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "부하 봇과 수렴 검증기 (client/src/model을 그대로 import)",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "bot": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.22.0",
+    "y-websocket": "^3.1.0",
+    "yjs": "file:../client/node_modules/yjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3"
+  }
+}
