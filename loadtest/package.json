@@ -9,6 +9,7 @@
   },
   "scripts": {
     "bot": "tsx src/index.ts",
+    "test": "tsx --test src/converge.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
