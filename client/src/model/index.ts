@@ -1,4 +1,5 @@
 export * from './columns'
+export * from './hash'
 export * from './relations'
 export * from './schema'
 export * from './tables'

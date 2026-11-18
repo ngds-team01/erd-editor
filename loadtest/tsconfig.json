@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    // client/src/model은 확장자 없이 import하므로(Vite 방식) bundler 해석을 씀, 실행은 tsx가 담당
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}
