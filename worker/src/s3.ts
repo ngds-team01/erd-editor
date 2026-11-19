@@ -19,8 +19,12 @@ export const s3 = new S3Client({
     config.s3AccessKey && config.s3SecretKey
       ? { accessKeyId: config.s3AccessKey, secretAccessKey: config.s3SecretKey }
       : undefined,
-  // MinIO가 응답하지 않을 때 주기 전체가 멈추지 않게 한다
-  requestHandler: { connectionTimeout: 3_000, requestTimeout: 10_000 },
+  // MinIO가 응답하지 않을 때 주기 전체가 멈추지 않게 한다. 끊기면 그 문서는 다음 주기에 다시 한다.
+  // - requestTimeout: 응답 헤더가 올 때까지 (PUT은 본문 업로드를 마친 뒤 헤더가 오므로 업로드 시간도 포함).
+  //   throwOnRequestTimeout이 없으면 SDK가 경고만 남기고 계속 기다린다.
+  // - socketTimeout: 헤더를 받은 뒤 본문이 이 시간 동안 한 바이트도 안 오면 끊는다 (requestTimeout은 본문을 안 본다).
+  // 느려도 계속 받고 있는 본문은 끊지 않는다. 시간 초과는 SDK가 재시도한다 (기본 3번).
+  requestHandler: { connectionTimeout: 3_000, requestTimeout: 10_000, throwOnRequestTimeout: true, socketTimeout: 10_000 },
 })
 
 export function snapshotKey(docId: string): string {
