@@ -126,6 +126,9 @@ const memos = doc.getMap<Y.Map<any>>('memos')  // { id, text: string, position: 
 - **ID 생성**: `crypto.randomUUID()`. 클라이언트가 만든다. 서버는 ID를 만들지 않는다.
 - **한 동작 = 한 트랜잭션**: 여러 키를 바꾸는 동작은 `doc.transact(() => { ... })` 안에서 한다 (예: 테이블 생성 시 logicalName·physicalName·position·columns를 한 번에).
 - **테이블 삭제**: 같은 트랜잭션에서 그 테이블을 `fromTable`/`toTable`로 가진 관계도 함께 삭제한다.
+- **컬럼 삭제**: 같은 트랜잭션에서 그 컬럼을 FK로 쓰는 관계(`toTable`이 그 테이블이고 `toColumn`이 그 컬럼인 관계)도 함께 삭제한다.
+  - FK 컬럼이 없어진 관계를 남겨 두면 어느 컬럼을 참조하는지 알 수 없는 관계가 된다. `toColumn`이 없는 테이블 단위 관계는 컬럼을 지워도 그대로 둔다.
+  - 동시 편집으로 삭제된 컬럼을 가리키는 관계가 남는 경우는 아래 "고아 관계 처리"를 따른다.
 - **고아 관계 처리**: 동시 편집으로 존재하지 않는 테이블·컬럼을 가리키는 관계가 남을 수 있다. 클라이언트는 이런 관계를 **그리지 않는다**(데이터는 지우지 않음). 수렴 검증에는 영향 없음.
 - **삭제된 테이블에 동시에 추가된 컬럼**은 테이블과 함께 사라진다(표 2의 "삭제로 수렴"). 의도된 동작이다.
 - **드래그**: 드래그 중에는 `position`을 최대 50ms에 한 번만 쓰고, 드래그가 끝날 때 마지막 값을 한 번 더 쓴다.
@@ -219,7 +222,9 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 
 1. 파드에 문서의 첫 클라이언트가 붙으면: 문서를 복원(6.4)하고 채널을 **구독**한 뒤 `JOIN`을 발행한다. 피어가 없으면 **LOCAL**. → 제안서는 처음 연 파드는 발행하지 않는다고 명시했지만, 넘친 파드가 먼저 열었는지 확인하기 위해 1회 `JOIN` 만 예외로 설정.
 2. `JOIN`을 받은 파드: 보낸 파드를 피어 목록에 넣고 **SHARED**로 바꾼 뒤, 그 파드에게 `HEARTBEAT`(to=보낸 파드)와 `SYNC1`을 보낸다. JOIN을 보낸 파드도 피어에게서 HEARTBEAT·SYNC1 등 어떤 메시지든 받으면, 보낸 파드를 피어 목록에 넣고 SHARED로 바꾼다.
-3. `SYNC1`을 받으면 `SYNC2`(to=보낸 파드)로 상대에게 없는 부분을 돌려준다. 처음 보는 피어면 자기 `SYNC1`(to=보낸 파드)도 보내서 양방향으로 맞춘다.
+3. `SYNC1`을 받으면 `SYNC2`(to=보낸 파드)로 상대에게 없는 부분을 돌려준다. **아직 `SYNC1`을 보내지 않은 피어면** 자기 `SYNC1`(to=보낸 파드)도 보내서 양방향으로 맞춘다.
+   - "처음 보는 피어"로 판단하면 안 된다. `JOIN`을 보낸 파드는 상대의 `HEARTBEAT`를 `SYNC1`보다 먼저 받아 규칙 2에 따라 이미 피어로 등록하므로, `SYNC1`을 받을 때는 "처음 보는 피어"가 아니다. 그러면 자기 `SYNC1`을 보내지 않아 새로 연 파드에만 있는 내용이 상대에게 가지 않는다.
+   - 그래서 피어마다 `SYNC1`을 보냈는지 기록해 두고, 보내지 않은 피어에게만 한 번 보낸다.
 4. **SHARED인 동안에만** 로컬 클라이언트의 업데이트를 `UPDATE`로 발행한다. LOCAL이면 발행하지 않는다. SHARED인 동안에만 로컬 클라이언트의 awareness 변경을 AWARENESS로 발행한다. 받은 파드는 자기 클라이언트들에게 그대로 전달한다.
 5. SHARED 파드는 `HEARTBEAT`를 **5초**마다 보낸다. 피어에게서 **15초** 동안 아무 메시지도 없으면 피어 목록에서 뺀다.
 6. 파드의 그 문서 마지막 클라이언트가 떠나면: Streams flush(6.2) → `LEAVE` 발행 → 구독 해제 → 메모리에서 문서 제거.
@@ -340,14 +345,25 @@ backend editors
 | `VITE_WS_URL` | `ws://localhost:8088/ws` | client |
 | `AWS_REGION` | `us-east-1` | server, worker |
 
-AWS SDK v3로 MinIO에 붙으려면 region 값과 path-style 설정이 필요하다. `S3Client`는 아래처럼 만든다.
+AWS SDK v3로 MinIO에 붙으려면 region 값, path-style 설정, 접속 키가 필요하다. `S3Client`는 아래처럼 만든다.
 
 ```tsx
-new S3Client({ endpoint: S3_ENDPOINT || undefined, region: AWS_REGION, forcePathStyle: true })
+new S3Client({
+  endpoint: S3_ENDPOINT || undefined,
+  region: AWS_REGION,
+  forcePathStyle: true,
+  credentials:
+    S3_ACCESS_KEY && S3_SECRET_KEY
+      ? { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY }
+      : undefined,
+})
 ```
 
 - MinIO는 path-style 주소(`http://minio:9000/버킷/키`)만 지원하므로 `forcePathStyle`이 필요하다.
-- 접속 키는 SDK 기본 이름(`AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`)으로 넣는다. SDK는 `S3_ACCESS_KEY` 같은 이름을 읽지 않는다.
+- **접속 키는 Secret `s3-credentials`의 `S3_ACCESS_KEY`·`S3_SECRET_KEY`로 주입되고, 코드가 이 값을 읽어 `credentials`로 넘긴다.**
+  - SDK는 환경 변수에서 자기 기본 이름(`AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`)만 자동으로 읽는다. `S3_ACCESS_KEY` 같은 이름은 읽지 않으므로 `credentials`를 빼면 접속 키를 찾지 못해 MinIO 요청이 실패한다.
+  - `AWS_*` 이름으로 바꾸지 않고 `S3_*`를 그대로 쓴다. 같은 Secret을 MinIO 루트 계정(`MINIO_ROOT_USER`·`MINIO_ROOT_PASSWORD`)과 버킷 생성 Job도 이 이름으로 읽고 있어서(`deploy/k8s/minio.yaml`), 이름을 바꾸면 Secret, MinIO, 버킷 생성 Job, 서버·워커 코드를 모두 함께 고쳐야 한다.
+  - 두 값이 모두 없으면 `credentials`를 `undefined`로 두어 SDK 기본 방식(`AWS_*` 환경 변수, IAM 역할 등)으로 찾게 한다. AWS S3로 확장할 때 키 없이 IAM 역할로 붙는 경우를 위한 것이다.
 - AWS S3로 확장할 때는 `S3_ENDPOINT`만 비우면 된다 (빈 문자열 대신 `undefined`가 넘어가도록 `|| undefined`).
 
 ---
@@ -365,3 +381,4 @@ new S3Client({ endpoint: S3_ENDPOINT || undefined, region: AWS_REGION, forcePath
 | v0.1.2 | 2026-11-09 |	인프라 확정,  7.3 수정댓글 |	박지호 |
 | v0.1.3 | 2026-11-10 | 해시 대상 명시, S3 키 이름, HAProxy 체크 주기 | 이지민 |
 | v0.1.4 | 2026-11-16 | 7.3 동기화 지연 버킷에 10ms 미만(1·2.5·5ms) 추가 | 이지민 |
+| v0.1.5 | 2026-11-20 | 2주차 반영: 2.7 컬럼 삭제 시 FK 관계 삭제, 5.3-3 SYNC1 조건, 7.5 S3 접속 키 전달 방법 | 이지민 |
