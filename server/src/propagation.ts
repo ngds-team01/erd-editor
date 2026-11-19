@@ -48,7 +48,6 @@ export class DocPropagation {
     propagations.set(doc.name, this)
     this.heartbeatTimer = setInterval(() => this.heartbeat(), config.heartbeatIntervalMs)
     this.heartbeatTimer.unref()
-    void this.start()
   }
 
   /** 발행 여부. broadcast 모드면 피어가 없어도 항상 발행한다 (5.4). */
@@ -56,8 +55,11 @@ export class DocPropagation {
     return config.propagationMode === 'broadcast' || this.peers.size > 0
   }
 
-  // 5.3-1: 구독한 뒤 JOIN 발행. (3주차: 이 앞에 MinIO·Streams 복원이 들어간다)
-  private async start() {
+  /**
+   * 5.3-1: 구독한 뒤 JOIN 발행. 문서 복원(6.4)이 끝난 뒤 doc.ts가 부른다.
+   * 복원 전에 SYNC를 주고받으면 피어에게 빈 문서 기준 state vector를 보내게 된다.
+   */
+  async start() {
     try {
       await subscriber.subscribe(this.channel)
     } catch (err) {

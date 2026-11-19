@@ -13,6 +13,12 @@ function positiveInt(name: string, fallback: number): number {
   return fallback
 }
 
+/** 빈 문자열은 값이 없는 것으로 본다. */
+function optional(name: string): string | undefined {
+  const raw = process.env[name]?.trim()
+  return raw ? raw : undefined
+}
+
 // 환경 변수 목록과 의미는 docs/contracts.md 7.5 "포트·환경 변수" 표가 기준이다.
 export const config = {
   port: positiveInt('PORT', 8080),
@@ -25,4 +31,11 @@ export const config = {
   heartbeatIntervalMs: positiveInt('HEARTBEAT_INTERVAL_MS', 5000),
   // contracts 6.2: 이 시간 동안 모은 업데이트를 합쳐 XADD 1회
   flushIntervalMs: positiveInt('FLUSH_INTERVAL_MS', 200),
+  // contracts 6.4: 문서 복원에 쓰는 MinIO 스냅샷. AWS S3로 바꿀 때는 S3_ENDPOINT를 비운다.
+  s3Endpoint: optional('S3_ENDPOINT'),
+  s3Bucket: optional('S3_BUCKET') ?? 'erd-snapshots',
+  // contracts 7.5: Secret(s3-credentials)에서 주입된다. SDK가 이 이름을 읽지 않아 S3Client에 credentials로 넘긴다 (s3.ts).
+  s3AccessKey: optional('S3_ACCESS_KEY'),
+  s3SecretKey: optional('S3_SECRET_KEY'),
+  awsRegion: optional('AWS_REGION') ?? 'us-east-1',
 }

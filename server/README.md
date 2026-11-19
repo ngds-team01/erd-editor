@@ -19,9 +19,12 @@ npm run dev        # 파일 저장 시 자동 재시작, http://localhost:8080
 | 명령 | 하는 일 |
 | --- | --- |
 | `npm run dev` | 개발 모드 실행 (tsx watch) |
-| `npm run build` | `dist/`로 컴파일 |
+| `npm run build` | `dist/`로 컴파일 (테스트 파일 제외) |
 | `npm start` | 컴파일된 `dist/index.js` 실행 |
-| `npm run typecheck` | 타입 검사만 |
+| `npm run typecheck` | 타입 검사 (테스트 포함) |
+| `npm test` | 복원 로직 테스트 (Redis·MinIO 없이 메모리 구현으로) |
+
+MinIO가 없어도 서버는 뜬다. 문서를 열 때 스냅샷을 읽지 못했다는 경고를 남기고 Streams 기록만으로 복원한다 (아래 "문서 복원").
 
 Docker 이미지:
 
@@ -70,7 +73,7 @@ y-websocket 프로토콜을 그대로 쓴다. 바이너리 메시지의 첫 varU
 ### 연결 유지와 종료
 
 - 서버는 30초마다 ping을 보내고, 다음 ping 때까지 pong이 없으면 연결을 닫는다.
-- 문서에 마지막 연결이 끊기면 Streams 버퍼를 flush하고 LEAVE를 보낸 뒤 서버 메모리에서 문서를 내린다 (contracts 5.3-6). 다시 열 때 Streams·스냅샷에서 복원하는 기능은 3주차.
+- 문서에 마지막 연결이 끊기면 Streams 버퍼를 flush하고 LEAVE를 보낸 뒤 서버 메모리에서 문서를 내린다 (contracts 5.3-6). 다시 열면 스냅샷과 Streams 기록으로 복원한다 (아래 "문서 복원").
 
 ### Streams 기록 (contracts 6.1, 6.2)
 
@@ -82,9 +85,30 @@ y-websocket 프로토콜을 그대로 쓴다. 바이너리 메시지의 첫 varU
 | 1012 | 서버 종료·재시작 중 | 재접속 (다른 파드로 연결된다) |
 | 4400 | `docId` 형식이 틀림 | 재접속하지 않고 오류 표시 |
 
+### 문서 복원 (contracts 6.4)
+
+문서를 처음 열 때(이 파드에 그 문서의 첫 연결이 붙을 때) 아래 순서로 복원한 뒤 채널을 구독하고 JOIN한다 (5.3-1).
+
+1. MinIO에서 `snapshots/{docId}/latest.bin`과 메타데이터 `last-stream-id`를 읽는다. 없으면 빈 문서, `lastStreamId = 0`
+2. `XRANGE doc:{docId}:log (<lastStreamId> +`를 500개씩 읽어 적용한다
+3. 이 파드가 아직 Streams에 기록하지 못한 버퍼(Redis가 끊긴 동안 문서를 내렸다 다시 연 경우)도 적용한다
+4. 걸린 시간(1~2단계)을 `editor_doc_restore_seconds`에 기록한다
+
+- **복원이 끝나기 전에는 클라이언트에게 답하지 않는다.** 그사이 붙은 연결에는 서버 SyncStep1도 보내지 않고, 받은 메시지(SyncStep1, 편집, 커서)는 연결별로 쌓아 두었다가 복원이 끝나면 받은 순서대로 처리한다. 빈 문서로 SyncStep2를 보내면 클라이언트가 빈 문서를 동기화 완료로 보기 때문이다.
+- 복원으로 넣은 내용은 이미 저장돼 있으므로 Pub/Sub로 발행하지도, Streams에 다시 기록하지도 않는다.
+- 로그 한 줄: `[doc:x] 복원 완료 0.024초 (스냅샷 있음, 기록 98항목)`
+
+| 상황 | 처리 |
+| --- | --- |
+| 스냅샷 읽기 실패 (MinIO 꺼짐 등, 5초 안에 응답 없음 포함) | 경고를 남기고 Streams 기록을 처음부터 적용한다. 워커가 이미 잘라 낸 앞부분은 빠지므로, 문서가 열려 있는 동안 5초마다 스냅샷을 다시 읽어 합친다 |
+| Streams 읽기 실패 (Redis 끊김) | 읽은 데까지로 복원하고, Redis가 다시 붙으면 나머지를 이어 읽어 적용한다 (접속한 클라이언트에게도 전달) |
+| 복원 중에 마지막 연결이 떠남 | 복원 결과를 버리고 문서를 내린다 |
+
+어느 경우든 클라이언트가 가진 내용은 접속 후 SyncStep2로 서버에 다시 올라오므로 지워지지 않는다.
+
 ### 다른 파드와 전파 (contracts 5장)
 
-- 문서를 처음 열면 `doc:{docId}:updates` 채널을 구독하고 JOIN을 보낸다. 다른 파드가 응답하지 않으면 **LOCAL**(Pub/Sub 발행 안 함).
+- 문서를 처음 열면 복원을 마친 뒤 `doc:{docId}:updates` 채널을 구독하고 JOIN을 보낸다. 다른 파드가 응답하지 않으면 **LOCAL**(Pub/Sub 발행 안 함).
 - 다른 파드도 같은 문서를 열고 있으면 **SHARED**: 이 파드 사용자의 편집(UPDATE)과 커서(AWARENESS)를 발행하고, 받은 것은 이 파드 사용자에게 전달한다. 받은 것은 다시 발행하지 않는다.
 - 처음 만난 파드끼리는 SYNC1·SYNC2로 서로 없는 부분을 주고받는다.
 - SHARED 동안 `HEARTBEAT_INTERVAL_MS`(5초)마다 HEARTBEAT를 보내고, 3배(15초) 동안 소식 없는 파드는 피어에서 뺀다. 피어가 없으면 LOCAL로 돌아간다.
@@ -115,7 +139,10 @@ contracts 7.2를 따른다.
 | `PROPAGATION_MODE` | `adaptive` | `adaptive` 또는 `broadcast` (실험 3, 피어가 없어도 항상 발행) | 사용 중 |
 | `FLUSH_INTERVAL_MS` | `200` | Streams 기록 병합 주기 | 사용 중 |
 | `HEARTBEAT_INTERVAL_MS` | `5000` | SHARED 문서의 HEARTBEAT 주기. 피어 타임아웃은 3배 | 사용 중 |
-| `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `AWS_REGION` | — | MinIO 스냅샷 복원 | 3주차 |
+| `S3_ENDPOINT` | (없음) | MinIO 주소 (`http://minio:9000`). 비우면 AWS S3 | 사용 중 |
+| `S3_BUCKET` | `erd-snapshots` | 스냅샷 버킷 | 사용 중 |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | (없음) | Secret `s3-credentials`에서 주입. SDK가 이 이름을 읽지 않아 `S3Client`에 `credentials`로 넘긴다 (contracts 7.5). 둘 다 없으면 SDK 기본 방식 | 사용 중 |
+| `AWS_REGION` | `us-east-1` | MinIO도 값이 있어야 한다 | 사용 중 |
 
 ## Redis 연결
 
@@ -132,7 +159,7 @@ contracts 7.2를 따른다.
 | `editor_ws_connections` | gauge | 현재 WebSocket 연결 수 (HPA 기준) |
 | `editor_messages_total{type}` | counter | `sync`·`awareness`: 클라이언트에게 받은 메시지 / `pubsub_out`: 발행 / `pubsub_in`: 구독으로 배달받은 메시지(자기 것 포함) / `xadd`: Streams 기록 |
 | `editor_sync_latency_seconds` | histogram | 다른 파드 UPDATE를 받았을 때 `now - sentAt` (buckets 0.001~2초) |
-| `editor_doc_restore_seconds` | histogram | 문서 복원 시간 (3주차 복원 구현 때 값이 쌓임) |
+| `editor_doc_restore_seconds` | histogram | 문서 복원 시간 (스냅샷 읽기 + Streams 기록 적용). 문서를 처음 열 때마다 1번 |
 | `editor_docs{mode}` | gauge | 열린 문서 수 (`local`, `shared`) |
 
 - Redis 작업량은 전체 파드의 `pubsub_out + pubsub_in + xadd` 합으로 본다. 프로세스 CPU·메모리 등 Node 기본 지표도 같이 나온다.
@@ -142,7 +169,9 @@ contracts 7.2를 따른다.
 | 파일 | 내용 |
 | --- | --- |
 | `src/index.ts` | HTTP 서버, `/healthz`·`/readyz`, WebSocket 업그레이드와 docId 검사, 종료 순서 |
-| `src/doc.ts` | 문서별 `Y.Doc`·awareness 관리, y-websocket 메시지 처리, ping |
+| `src/doc.ts` | 문서별 `Y.Doc`·awareness 관리, y-websocket 메시지 처리, ping, 복원 순서와 복원 중 메시지 대기 |
+| `src/restore.ts` | 스냅샷 + Streams 기록 + 미기록 버퍼를 합쳐 복원 상태 만들기 (`restore.test.ts`에 테스트) |
+| `src/s3.ts` | MinIO 스냅샷 읽기 |
 | `src/redis.ts` | Redis 연결, 재접속, 상태 로그 |
 | `src/config.ts` | 환경 변수 읽기 |
 
@@ -152,4 +181,4 @@ contracts 7.2를 따른다.
 | --- | --- | --- |
 | 1주차 | WebSocket 서버(#4), Redis 연결(#5), 이 명세서(#6) | 완료 |
 | 2주차 | 적응형 전파(#18), `/metrics`(#19), Streams 기록(#20), 종료 시 flush·LEAVE(#21) | 완료 |
-| 3주차 | 스냅샷 복원(MinIO) | 예정 |
+| 3주차 | 스냅샷 복원(#43) | 진행 중 |
