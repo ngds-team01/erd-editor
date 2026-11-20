@@ -16,6 +16,7 @@ const STATUS_LABELS: Record<ConnectionStatus, string> = {
   connecting: '연결 중',
   connected: '연결됨',
   disconnected: '연결 끊김',
+  stopped: '잘못된 문서 주소',
 }
 
 // 관계 버튼 4개 = 카디널리티 2종 × 식별 여부 2종 (2.5)
