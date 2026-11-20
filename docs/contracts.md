@@ -293,7 +293,7 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 | --- | --- | --- | --- |
 | `editor_ws_connections` | gauge | — |  HPA 기준 |
 | `editor_messages_total` | counter | `type`: `sync`, `awareness`, `pubsub_in`, `pubsub_out`, `xadd` | 라벨 값 |
-| `editor_sync_latency_seconds` | histogram | — |  Pub/Sub 수신 시 `now - sentAt`. buckets: 0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2 |
+| `editor_sync_latency_seconds` | histogram | — |  Pub/Sub 수신 시 `now - sentAt`. buckets: 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2 |
 | `editor_doc_restore_seconds` | histogram | — | 6.4의 2~3단계 소요 시간 |
 | `editor_docs` | gauge | `mode`: `local`, `shared` | SHARED 문서 비율 대시보드용 |
 
@@ -364,3 +364,4 @@ new S3Client({ endpoint: S3_ENDPOINT || undefined, region: AWS_REGION, forcePath
 | v0.1.1 | 2026-11-06 | 백엔드 확정 | 이지민 |
 | v0.1.2 | 2026-11-09 |	인프라 확정,  7.3 수정댓글 |	박지호 |
 | v0.1.3 | 2026-11-10 | 해시 대상 명시, S3 키 이름, HAProxy 체크 주기 | 이지민 |
+| v0.1.4 | 2026-11-16 | 7.3 동기화 지연 버킷에 10ms 미만(1·2.5·5ms) 추가 | 이지민 |

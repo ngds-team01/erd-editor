@@ -131,7 +131,7 @@ contracts 7.2를 따른다.
 | --- | --- | --- |
 | `editor_ws_connections` | gauge | 현재 WebSocket 연결 수 (HPA 기준) |
 | `editor_messages_total{type}` | counter | `sync`·`awareness`: 클라이언트에게 받은 메시지 / `pubsub_out`: 발행 / `pubsub_in`: 구독으로 배달받은 메시지(자기 것 포함) / `xadd`: Streams 기록 |
-| `editor_sync_latency_seconds` | histogram | 다른 파드 UPDATE를 받았을 때 `now - sentAt` (buckets 0.01~2초) |
+| `editor_sync_latency_seconds` | histogram | 다른 파드 UPDATE를 받았을 때 `now - sentAt` (buckets 0.001~2초) |
 | `editor_doc_restore_seconds` | histogram | 문서 복원 시간 (3주차 복원 구현 때 값이 쌓임) |
 | `editor_docs{mode}` | gauge | 열린 문서 수 (`local`, `shared`) |
 
