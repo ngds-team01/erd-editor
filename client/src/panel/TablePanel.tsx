@@ -37,10 +37,13 @@ const COLUMN_TYPES = [
   'JSON',
 ]
 
+// onFocusColumn·onBlurColumn: column 영역에 포커스가 들어오고 나갈 때 App에 알림 (편집 중 표시, 3)
 type TablePanelProps = {
   doc: Y.Doc
   tableId: string
   onClose: () => void
+  onFocusColumn: (tableId: string, columnId: string) => void
+  onBlurColumn: (columnId: string) => void
 }
 
 //tableid로 테이블 Y.Map을 찾아 tableData로 변환
@@ -82,7 +85,7 @@ function useTable(doc: Y.Doc, tableId: string, onMissing: () => void): TableData
 
 //TablePanel에서 직접 처리하는 table 이름, 색상 및 삭제 작업은 직접 처리
 // - 나머지는 columnEditor, UniqueEditor가 수행
-export function TablePanel({ doc, tableId, onClose }: TablePanelProps) {
+export function TablePanel({ doc, tableId, onClose, onFocusColumn, onBlurColumn }: TablePanelProps) {
   const table = useTable(doc, tableId, onClose)
   if (!table) {
     return null
@@ -166,6 +169,8 @@ export function TablePanel({ doc, tableId, onClose }: TablePanelProps) {
           index={index}
           isLast={index === table.columns.length - 1}
           duplicateAutoIncrement={column.autoIncrement && column.id !== firstAutoIncrementId}
+          onFocusColumn={onFocusColumn}
+          onBlurColumn={onBlurColumn}
         />
       ))}
       <button type="button" className="btn p-add" onClick={() => addNextColumn(doc, tableId)}>

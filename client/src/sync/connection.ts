@@ -1,5 +1,8 @@
+import type { Awareness } from 'y-protocols/awareness'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
+import { createPeerStore, initPresence, loadUser } from './presence'
+import type { PeerStore } from './presence'
 
 // VITE_WS_URL을 지정하지 않았을 때의 서버 주소 (7.5)
 const DEFAULT_WS_URL = 'ws://localhost:8088/ws'
@@ -13,11 +16,14 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 
 // subscribeStatus: 상태가 바뀔 때 호출할 함수를 등록하고 해제 함수를 돌려줌
 // getStatus: 현재 상태를 돌려줌
+// awareness: 내 사용자 정보·편집 중인 테이블을 올리는 곳 (3), peers: 다른 사용자 목록
 export type Connection = {
   doc: Y.Doc
   docId: string
   subscribeStatus: (listener: () => void) => () => void
   getStatus: () => ConnectionStatus
+  awareness: Awareness
+  peers: PeerStore
 }
 
 // 주소의 ?doc= 값을 읽어 형식이 맞으면 돌려주고, 틀리면 null
@@ -36,6 +42,9 @@ export function connect(docId: string): Connection {
   const listeners = new Set<() => void>()
   // 재시도 사이에는 provider 내부 값이 이벤트 없이 바뀌므로, 마지막 이벤트 값을 보관
   let status: ConnectionStatus = 'connecting'
+  // provider가 만든 awareness에 이 탭의 사용자 정보를 올림, 접속 전이면 접속하자마자 전송됨
+  const { awareness } = provider
+  initPresence(awareness, loadUser())
 
   // provider의 접속 상태 이벤트를 받아 저장하고, 등록된 함수에 알림
   provider.on('status', (event) => {
@@ -51,5 +60,7 @@ export function connect(docId: string): Connection {
       return () => listeners.delete(listener)
     },
     getStatus: () => status,
+    awareness,
+    peers: createPeerStore(awareness),
   }
 }

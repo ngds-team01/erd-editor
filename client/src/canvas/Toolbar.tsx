@@ -4,6 +4,7 @@ import { createTable, getTables } from '../model'
 import type { Connection, ConnectionStatus } from '../sync/connection'
 import { sameKind } from './relationMode'
 import type { RelationKind } from './relationMode'
+import { UserList } from './UserList'
 
 // Canvas의 SNAP_GRID와 같은 간격
 const GRID_SIZE = 10
@@ -60,9 +61,9 @@ function RelationIcon({ cardinality, identifying }: RelationKind) {
   )
 }
 
-// 상단 툴바: 로고, table 추가 버튼, 관계 버튼 4개
+// 상단 툴바: 로고, table 추가 버튼, 관계 버튼 4개 / 오른쪽: 접속자, 문서 ID·접속 상태
 export function Toolbar({ connection, relationKind, onToggleRelation }: ToolbarProps) {
-  const { doc, docId, subscribeStatus, getStatus } = connection
+  const { doc, docId, subscribeStatus, getStatus, awareness, peers } = connection
   // React 바깥의 접속 상태를 구독, 상태가 바뀌면 Toolbar를 다시 그림
   const status = useSyncExternalStore(subscribeStatus, getStatus)
   // React Flow 내부 상태(캔버스 크기, 이동량, 배율)에 접근
@@ -133,6 +134,8 @@ export function Toolbar({ connection, relationKind, onToggleRelation }: ToolbarP
       })}
       {/* flex-sp: 남는 공간을 차지해 접속 상태를 오른쪽 끝으로 밈 */}
       <span className="flex-sp" />
+      <UserList awareness={awareness} peers={peers} />
+      <div className="tb-sep" />
       <span className="save-state">
         {docId} · {STATUS_LABELS[status]}
       </span>

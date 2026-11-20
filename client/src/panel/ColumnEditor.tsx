@@ -1,3 +1,5 @@
+import { useEffect } from 'react'
+import type { FocusEvent } from 'react'
 import type * as Y from 'yjs'
 import {
   deleteColumn,
@@ -12,6 +14,7 @@ import { TextField } from './TextField'
 
 // index: 화면 순서상 위치(↑↓ 이동 계산), isLast: 맨 아래 여부(↓ 비활성)
 // duplicateAutoIncrement: AI인데 테이블의 첫 번째 AI column이 아님 → 경고 표시
+// onFocusColumn·onBlurColumn: 이 column 영역에 포커스가 들어오고 나갈 때 호출 (편집 중 표시, 3)
 type ColumnEditorProps = {
   doc: Y.Doc
   tableId: string
@@ -19,6 +22,8 @@ type ColumnEditorProps = {
   index: number
   isLast: boolean
   duplicateAutoIncrement: boolean
+  onFocusColumn: (tableId: string, columnId: string) => void
+  onBlurColumn: (columnId: string) => void
 }
 
 // PK, NN, UQ, AI 체크박스 1개에 필요한 값
@@ -70,8 +75,22 @@ export function ColumnEditor({
   index,
   isLast,
   duplicateAutoIncrement,
+  onFocusColumn,
+  onBlurColumn,
 }: ColumnEditorProps) {
   const warning = columnWarning(column, duplicateAutoIncrement)
+
+  // 포커스가 있는 채로 column이 삭제되거나 패널이 닫히면 blur가 오지 않으므로, 사라질 때 직접 알림
+  useEffect(() => () => onBlurColumn(column.id), [column.id, onBlurColumn])
+
+  // 포커스가 다른 column 영역으로 옮겨 가면 그쪽 onFocusColumn이 덮어쓰므로 알리지 않음
+  // (알리면 "column 없음 → 다른 column" 순서로 awareness 메시지가 두 번 나감)
+  function handleBlur(event: FocusEvent<HTMLDivElement>) {
+    const next = event.relatedTarget
+    if (!(next instanceof Element && next.closest('.p-col'))) {
+      onBlurColumn(column.id)
+    }
+  }
 
   // 이 column에 대한 updateColumn 호출을 줄여 쓰기 위한 함수
   function update(patch: ColumnPatch) {
@@ -98,7 +117,8 @@ export function ColumnEditor({
   }
 
   return (
-    <div className="p-col">
+    // React의 onFocus·onBlur는 안쪽 입력칸·체크박스·버튼의 포커스 변화도 받음
+    <div className="p-col" onFocus={() => onFocusColumn(tableId, column.id)} onBlur={handleBlur}>
       <div className="r1">
         <TextField
           value={column.logicalName}
