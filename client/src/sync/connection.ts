@@ -53,11 +53,14 @@ export function connect(docId: string): Connection {
   const { awareness } = provider
   initPresence(awareness, loadUser())
 
-   // provider의 접속 상태 이벤트를 받아 저장하고, 등록된 함수에 알림
-  provider.on('status', (event) => {
-    status = event.status
+  // 상태를 저장하고, 등록된 함수에 알림
+  function setStatus(next: ConnectionStatus) {
+    status = next
     listeners.forEach((listener) => listener())
-  })
+  }
+
+  // provider의 접속 상태 이벤트를 그대로 반영
+  provider.on('status', (event) => setStatus(event.status))
 
   // 동기화에 성공한 뒤로 연속으로 실패한 횟수, 백오프 대기 시간 계산에 사용
   let attempt = 0
@@ -65,8 +68,11 @@ export function connect(docId: string): Connection {
   // 서버가 연결을 닫음: close code로 대기 시간을 정해 그 뒤에 다시 접속
   provider.on('closed', ({ code }) => {
     const delay = reconnectDelay(code, attempt)
-    // 재접속하지 않음 (4400)
-    if (delay === null) return
+    // 재접속하지 않고 중단 상태로 표시 (4400)
+    if (delay === null) {
+      setStatus('stopped')
+      return
+    }
     // 1012는 계획된 재시작이라 실패로 세지 않음
     if (code !== CLOSE_SERVICE_RESTART) attempt++
     setTimeout(() => provider.connect(), delay)
