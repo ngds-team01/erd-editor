@@ -1,4 +1,4 @@
-// Redis Streams 편집 기록 (docs/contracts.md 6.1, 6.2).
+// Redis Streams 편집 기록 (docs/contracts.md 6.1, 6.2)과 복원 때 기록 읽기 (6.4).
 // 이 파드 클라이언트가 만든 업데이트만 FLUSH_INTERVAL_MS 동안 모아 Y.mergeUpdates로 합친 뒤
 // XADD doc:{docId}:log * u <bin> pod <podId> 1회로 기록한다.
 // 버퍼는 문서 객체와 따로 둔다. Redis가 끊긴 동안 문서가 내려가도 재연결 후 기록할 수 있게.
@@ -6,6 +6,7 @@ import * as Y from 'yjs'
 import { config } from './config.js'
 import { countMessage } from './metrics.js'
 import { isRedisReady, redis } from './redis.js'
+import type { LogReader } from './restore.js'
 
 /** docId → 아직 기록하지 못한 업데이트 */
 const pending = new Map<string, Uint8Array[]>()
@@ -16,6 +17,62 @@ const failing = new Set<string>()
 
 export function logKey(docId: string): string {
   return `doc:${docId}:log`
+}
+
+// 복원 때 XRANGE 한 번에 읽는 항목 수. 로그가 길어도 한 번에 큰 응답을 받지 않게 나눠 읽는다.
+const XRANGE_PAGE = 500
+
+/** 필드 목록 [k1, v1, k2, v2, …]에서 u 값을 찾는다. */
+function updateField(fields: Buffer[]): Uint8Array | undefined {
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    if (fields[i].toString() === 'u') return fields[i + 1]
+  }
+  return undefined
+}
+
+/** contracts 6.4-3: XRANGE doc:{docId}:log (<afterId> + 로 이후 기록을 읽는다 (afterId가 '0'이면 처음부터). */
+export const streamLog: LogReader = {
+  async *readAfter(docId, afterId) {
+    let start = afterId === '0' ? '-' : `(${afterId}`
+    for (;;) {
+      const page = await redis.xrangeBuffer(logKey(docId), start, '+', 'COUNT', XRANGE_PAGE)
+      for (const [rawId, fields] of page) {
+        const id = rawId.toString()
+        const update = updateField(fields)
+        if (update) yield { id, update }
+        start = `(${id}`
+      }
+      if (page.length < XRANGE_PAGE) return
+    }
+  },
+
+  /**
+   * 지금까지 XADD한 수(entries-added)보다 남은 수(length)가 적으면 앞부분이 지워진 적이 있다 (워커의 XTRIM).
+   * max-deleted-entry-id는 XDEL만 반영하고 XTRIM은 반영하지 않아서(Redis 7·8에서 확인) 쓸 수 없다.
+   */
+  async wasTrimmed(docId) {
+    let info: unknown[]
+    try {
+      info = (await redis.xinfo('STREAM', logKey(docId))) as unknown[]
+    } catch (err) {
+      // 기록이 아직 없는 문서
+      if ((err as Error).message.includes('no such key')) return false
+      throw err
+    }
+    const field = (name: string) => {
+      const at = info.indexOf(name)
+      return at < 0 ? NaN : Number(info[at + 1])
+    }
+    const length = field('length')
+    const added = field('entries-added')
+    // entries-added가 없으면(Redis 7 미만) 알 수 없으므로 잘린 것으로 본다
+    return !(Number.isFinite(length) && Number.isFinite(added)) || added > length
+  },
+}
+
+/** 아직 기록하지 못한 업데이트 (복원 때 같이 적용한다. Redis가 끊긴 동안 문서를 내렸다 다시 연 경우) */
+export function pendingUpdates(docId: string): Uint8Array[] {
+  return [...(pending.get(docId) ?? [])]
 }
 
 /** FLUSH_INTERVAL_MS 뒤 flush를 예약한다. 이미 예약돼 있으면 그대로 둔다. */
