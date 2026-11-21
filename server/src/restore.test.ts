@@ -19,10 +19,15 @@ function entries(updates: Uint8Array[], from = 0): Entry[] {
   return updates.map((update, i) => ({ id: `1000-${from + i}`, update }))
 }
 
-function memoryLog(list: Entry[], failAfter?: number): LogReader & { calls: string[] } {
+/** trimmed: 워커가 앞부분을 잘라 낸 적 있는지 (Error면 확인 실패) */
+function memoryLog(list: Entry[], failAfter?: number, trimmed: boolean | Error = false): LogReader & { calls: string[] } {
   const calls: string[] = []
   return {
     calls,
+    async wasTrimmed() {
+      if (trimmed instanceof Error) throw trimmed
+      return trimmed
+    },
     async *readAfter(_docId, afterId) {
       calls.push(afterId)
       let read = 0
@@ -116,16 +121,58 @@ describe('loadDocState (contracts 6.4)', () => {
     assert.deepEqual(tablesOf(result.update), { t1: 'users' })
   })
 
-  it('스냅샷을 못 읽으면 Streams 처음부터 읽고 실패를 알린다', async () => {
+  it('스냅샷을 못 읽어도 Streams가 잘린 적 없으면 Streams 처음부터 읽어 복원한다', async () => {
     const a = editor()
     a.set('t1', 'users')
-    const log = memoryLog(entries(a.updates))
+    const log = memoryLog(entries(a.updates), undefined, false)
 
     const result = await loadDocState('d1', snapshots(new Error('minio down')), log)
 
     assert.deepEqual(log.calls, ['0'])
     assert.equal(result.snapshot, 'failed')
+    assert.equal(result.waitForSnapshot, false)
     assert.match(String(result.snapshotError), /minio down/)
+    assert.deepEqual(tablesOf(result.update), { t1: 'users' })
+  })
+
+  it('스냅샷을 못 읽고 Streams 앞부분이 잘렸으면 복원하지 않고 스냅샷을 기다리라고 알린다', async () => {
+    // 테이블을 만든 기록은 XTRIM으로 잘리고, 그 테이블에 컬럼을 추가한 기록만 남은 상태
+    const doc = new Y.Doc()
+    const updates: Uint8Array[] = []
+    doc.on('update', (update: Uint8Array) => updates.push(update))
+    const table = new Y.Map<unknown>()
+    doc.getMap('tables').set('t1', table)
+    const columns = new Y.Map<string>()
+    table.set('columns', columns)
+    columns.set('c1', 'id')
+    columns.set('c2', 'name')
+    const log = memoryLog(entries(updates).slice(2), undefined, true)
+
+    // Streams만으로 복원하면 남은 기록이 잘린 테이블에 의존해서 빈 문서가 된다
+    const streamsOnly = new Y.Doc()
+    for (const entry of entries(updates).slice(2)) Y.applyUpdate(streamsOnly, entry.update)
+    assert.deepEqual(streamsOnly.getMap('tables').toJSON(), {})
+
+    const result = await loadDocState('d1', snapshots(new Error('minio down')), log)
+
+    assert.equal(result.waitForSnapshot, true)
+    assert.deepEqual(log.calls, []) // 기록을 읽지도 않는다
+    assert.match(String(result.snapshotError), /minio down/)
+  })
+
+  it('잘렸는지 확인하지 못해도(Redis 끊김) 스냅샷을 기다린다', async () => {
+    const result = await loadDocState('d1', snapshots(new Error('minio down')), memoryLog([], undefined, new Error('redis down')))
+
+    assert.equal(result.waitForSnapshot, true)
+  })
+
+  it('스냅샷이 없는 것(아직 안 만듦)은 실패가 아니라 잘렸어도 기다리지 않는다', async () => {
+    const a = editor()
+    a.set('t1', 'users')
+
+    const result = await loadDocState('d1', snapshots(null), memoryLog(entries(a.updates), undefined, true))
+
+    assert.equal(result.waitForSnapshot, false)
     assert.deepEqual(tablesOf(result.update), { t1: 'users' })
   })
 

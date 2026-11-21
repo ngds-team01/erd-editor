@@ -23,6 +23,8 @@ const PING_INTERVAL_MS = 30_000
 const RESTORE_ORIGIN = Symbol('restore')
 /** 복원 때 스냅샷을 못 읽었으면 문서가 열려 있는 동안 이 간격으로 다시 읽어 합친다. */
 const SNAPSHOT_RETRY_MS = 5_000
+/** Streams만으로 복원할 수 없어 스냅샷을 기다리는 동안 다시 시도하는 간격 (클라이언트가 기다리므로 짧게) */
+const SNAPSHOT_WAIT_RETRY_MS = 2_000
 
 type AwarenessChanges = { added: number[]; updated: number[]; removed: number[] }
 
@@ -126,8 +128,26 @@ function getDoc(name: string): SharedDoc {
 async function restore(doc: SharedDoc) {
   const end = docRestoreSeconds.startTimer()
   try {
-    const pending = pendingUpdates(doc.name)
-    const result = await loadDocState(doc.name, s3Snapshots, streamLog, pending)
+    let pending = pendingUpdates(doc.name)
+    let result = await loadDocState(doc.name, s3Snapshots, streamLog, pending)
+    // contracts 6.4: 스냅샷 없이는 문서를 만들 수 없으면(Streams 앞부분이 잘림) 읽을 수 있을 때까지 답하지 않는다
+    while (result.waitForSnapshot) {
+      if (doc.closed) {
+        end()
+        return
+      }
+      console.warn(
+        `[doc:${doc.name}] 스냅샷을 읽지 못했고 Streams 앞부분이 이미 잘려 있어 ${SNAPSHOT_WAIT_RETRY_MS / 1000}초 뒤 다시 시도, ` +
+          `그동안 클라이언트에게 답하지 않음: ${errorMessage(result.snapshotError)}`,
+      )
+      await new Promise((resolve) => setTimeout(resolve, SNAPSHOT_WAIT_RETRY_MS))
+      if (doc.closed) {
+        end()
+        return
+      }
+      pending = pendingUpdates(doc.name)
+      result = await loadDocState(doc.name, s3Snapshots, streamLog, pending)
+    }
     const seconds = end()
     if (doc.closed) return
     Y.applyUpdate(doc, result.update, RESTORE_ORIGIN)
@@ -138,9 +158,10 @@ async function restore(doc: SharedDoc) {
     const extra = pending.length > 0 ? `, 미기록 ${pending.length}개` : ''
     console.log(`[doc:${doc.name}] 복원 완료 ${seconds.toFixed(3)}초 (${snapshot}, 기록 ${result.entries}항목${extra})`)
     if (result.snapshotError !== undefined) {
+      // Streams가 한 번도 잘리지 않아 Streams만으로 전체를 복원한 경우. 그사이 워커가 자를 수 있으니 스냅샷도 다시 읽어 합친다.
       console.warn(
-        `[doc:${doc.name}] 스냅샷을 읽지 못해 Streams 기록만으로 복원, ${SNAPSHOT_RETRY_MS / 1000}초마다 다시 읽음: ` +
-          errorMessage(result.snapshotError),
+        `[doc:${doc.name}] 스냅샷을 읽지 못했지만 Streams가 잘린 적 없어 Streams 기록만으로 복원, ` +
+          `${SNAPSHOT_RETRY_MS / 1000}초마다 스냅샷을 다시 읽음: ${errorMessage(result.snapshotError)}`,
       )
       retrySnapshot(doc)
     }

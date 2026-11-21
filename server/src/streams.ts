@@ -45,6 +45,29 @@ export const streamLog: LogReader = {
       if (page.length < XRANGE_PAGE) return
     }
   },
+
+  /**
+   * 지금까지 XADD한 수(entries-added)보다 남은 수(length)가 적으면 앞부분이 지워진 적이 있다 (워커의 XTRIM).
+   * max-deleted-entry-id는 XDEL만 반영하고 XTRIM은 반영하지 않아서(Redis 7·8에서 확인) 쓸 수 없다.
+   */
+  async wasTrimmed(docId) {
+    let info: unknown[]
+    try {
+      info = (await redis.xinfo('STREAM', logKey(docId))) as unknown[]
+    } catch (err) {
+      // 기록이 아직 없는 문서
+      if ((err as Error).message.includes('no such key')) return false
+      throw err
+    }
+    const field = (name: string) => {
+      const at = info.indexOf(name)
+      return at < 0 ? NaN : Number(info[at + 1])
+    }
+    const length = field('length')
+    const added = field('entries-added')
+    // entries-added가 없으면(Redis 7 미만) 알 수 없으므로 잘린 것으로 본다
+    return !(Number.isFinite(length) && Number.isFinite(added)) || added > length
+  },
 }
 
 /** 아직 기록하지 못한 업데이트 (복원 때 같이 적용한다. Redis가 끊긴 동안 문서를 내렸다 다시 연 경우) */
