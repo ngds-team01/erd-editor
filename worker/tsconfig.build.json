@@ -1,0 +1,5 @@
+{
+  // 빌드(dist)에는 테스트 파일을 넣지 않는다. 타입 검사(npm run typecheck)는 tsconfig.json으로 테스트까지 본다.
+  "extends": "./tsconfig.json",
+  "exclude": ["src/**/*.test.ts"]
+}
