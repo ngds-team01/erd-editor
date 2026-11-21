@@ -261,6 +261,11 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 - 스냅샷 워커는 30초마다 `SCAN`으로 `doc:*:log`를 찾아, 새 항목이 있는 문서만 스냅샷을 만든다.
 - 스냅샷 업로드에 **성공한 뒤에만**, 직전 스냅샷의 `lastStreamId` 기준으로 `XTRIM doc:{docId}:log MINID <직전 lastStreamId>` 한다. 한 세대 늦게 잘라서, 옛 스냅샷으로 복원 중인 파드도 필요한 로그를 읽을 수 있게 한다.
 - 워커는 문서별로 직전 `lastStreamId`를 기억해 둔다.
+- **스냅샷 워커는 1개만 돌린다** (Deployment `replicas: 1`, `strategy: Recreate`).
+  - 워커 2개가 같은 문서를 처리하면 편집이 사라질 수 있다. 느린 워커가 스냅샷을 읽고 업로드하기 전에 멈춘 사이 다른 워커가 2세대 이상 진행하며 `XTRIM`하면, 느린 워커가 옛 스냅샷 기준으로 덮어쓴 뒤에는 그사이 잘린 로그 구간이 스냅샷에도 Streams에도 남지 않는다.
+  - `Recreate`는 배포할 때 옛 워커를 먼저 내리고 새 워커를 올려서, 두 워커가 겹치지 않게 한다 (기본값 `RollingUpdate`는 잠깐 겹친다).
+- 그래도 겹칠 때를 대비해 **업로드는 조건부로 한다.** 읽은 스냅샷의 ETag가 그대로일 때만(`If-Match: <ETag>`), 스냅샷이 없었으면 지금도 없을 때만(`If-None-Match: *`) 올린다.
+  - 조건이 안 맞으면(412: 다른 워커가 먼저 올림, 409: 같은 키에 조건부 업로드가 동시에 들어옴) 업로드도 `XTRIM`도 하지 않고, 다음 주기에 새 스냅샷을 읽어 다시 한다. `worker_snapshots_total{result="conflict"}`로 센다 (7.3).
 
 ### 6.4 복원 순서
 
@@ -270,6 +275,15 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 4. 클라이언트와 SyncStep1·2로 빠진 부분 교환
 
 **복원이 끝나기 전에는 클라이언트의 SyncStep1에 응답하지 않는다** (빈 문서를 내려보내지 않도록).
+
+2단계에서 스냅샷을 **읽지 못하면**(MinIO 장애 등. 스냅샷이 아직 없는 것은 실패가 아니라 빈 문서로 시작한다):
+
+- Streams가 한 번도 잘리지 않았으면 처음부터 전부 남아 있으므로, `XRANGE doc:{docId}:log - +`로 Streams만으로 복원한다.
+  - 확인한 뒤 읽기 전에 워커가 자를 수도 있으므로, 문서가 열려 있는 동안 5초마다 스냅샷을 다시 읽어 합친다.
+- 잘린 적이 있거나 확인하지 못하면(Redis 끊김 등), **복원하지 않고 클라이언트에게 답하지 않은 채 2초마다 스냅샷을 다시 읽는다.** 읽은 뒤 3단계부터 진행한다.
+  - 잘린 앞부분(예: 테이블 생성)에 의존하는 뒤 기록(예: 그 테이블에 컬럼 추가)은 Yjs가 대기 상태로만 들고 있어 화면에는 빈 문서로 보인다. 이때 사용자가 같은 테이블을 다시 만들면 스냅샷이 돌아온 뒤 두 벌이 된다.
+- 잘렸는지는 `XINFO STREAM doc:{docId}:log`의 `entries-added`(지금까지 추가된 항목 수)와 `length`(남은 항목 수)로 판단한다. `entries-added > length`면 잘린 적이 있다.
+  - `max-deleted-entry-id`는 쓰지 않는다. `XDEL`만 반영하고 `XTRIM`은 반영하지 않아서, 워커가 잘라도 `0-0`으로 남는다 (Redis 7.4·8에서 확인).
 
 ---
 
@@ -299,12 +313,22 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 | `editor_ws_connections` | gauge | — |  HPA 기준 |
 | `editor_messages_total` | counter | `type`: `sync`, `awareness`, `pubsub_in`, `pubsub_out`, `xadd` | 라벨 값 |
 | `editor_sync_latency_seconds` | histogram | — |  Pub/Sub 수신 시 `now - sentAt`. buckets: 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2 |
-| `editor_doc_restore_seconds` | histogram | — | 6.4의 2~3단계 소요 시간 |
+| `editor_doc_restore_seconds` | histogram | — | 6.4의 2~3단계 소요 시간 (스냅샷을 기다린 시간 포함) |
 | `editor_docs` | gauge | `mode`: `local`, `shared` | SHARED 문서 비율 대시보드용 |
 
 - Redis 작업량은 전체 파드의 `pubsub_out + pubsub_in + xadd` 합으로 계산하며, 실제 부하는 `redis_exporter`로 수집한다.
     
     → `redis_exporter`는 Redis가 받은 명령만 세므로 구독 파드로의 배달 횟수가 빠진다. 따라서 작업량은 서버 지표를 기반으로, `redis_exporter`는 CPU, 네트워크 부하 수집용으로 활용한다.
+
+스냅샷 워커 (`:8081/metrics`)
+
+| 이름 | 종류 | 라벨 | 상태 |
+| --- | --- | --- | --- |
+| `worker_snapshots_total` | counter | `result`: `saved`, `conflict`, `failed` | 문서별 처리 결과. `conflict`는 6.3 조건부 업로드에서 막힌 수, `failed`는 그 문서 처리 중 오류(S3·Redis 등) |
+| `worker_snapshot_entries_total` | counter | — | 스냅샷에 반영한 Streams 항목 수 |
+| `worker_stream_trimmed_total` | counter | — | `XTRIM`으로 지운 Streams 항목 수 |
+| `worker_cycle_seconds` | histogram | — | 한 주기(모든 문서 처리) 소요 시간. buckets: 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30 |
+| `worker_last_cycle_timestamp_seconds` | gauge | — | 마지막 주기가 끝난 시각(Unix 초). 워커가 멈췄는지 확인용. Redis가 끊겨 주기를 건너뛰면 갱신되지 않는다 |
 
 ### 7.4 라우팅 (HAProxy)
 
@@ -381,4 +405,4 @@ new S3Client({
 | v0.1.2 | 2026-11-09 |	인프라 확정,  7.3 수정댓글 |	박지호 |
 | v0.1.3 | 2026-11-10 | 해시 대상 명시, S3 키 이름, HAProxy 체크 주기 | 이지민 |
 | v0.1.4 | 2026-11-16 | 7.3 동기화 지연 버킷에 10ms 미만(1·2.5·5ms) 추가 | 이지민 |
-| v0.1.5 | 2026-11-20 | 2주차 반영: 2.7 컬럼 삭제 시 FK 관계 삭제, 5.3-3 SYNC1 조건, 7.5 S3 접속 키 전달 방법 | 이지민 |
+| v0.1.5 | 2026-11-21 | 2주차 반영: 2.7 컬럼 삭제 시 FK 관계 삭제, 5.3-3 SYNC1 조건, 6.3 워커 1개·조건부 업로드, 6.4 스냅샷을 못 읽을 때 복원, 7.3 워커 지표, 7.5 S3 접속 키 전달 방법 | 이지민 |
