@@ -4,14 +4,14 @@ import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom
 export const register = new Registry()
 collectDefaultMetrics({ register })
 
-/** 문서별 스냅샷 결과. saved = 업로드 성공, failed = 그 문서 처리 실패 */
+/** 문서별 스냅샷 결과. saved = 업로드 성공, conflict = 다른 워커가 먼저 바꿔서 안 올림, failed = 그 문서 처리 실패 */
 export const snapshotsTotal = new Counter({
   name: 'worker_snapshots_total',
   help: '문서별 스냅샷 처리 결과 수',
   labelNames: ['result'],
   registers: [register],
 })
-for (const result of ['saved', 'failed']) snapshotsTotal.inc({ result }, 0)
+for (const result of ['saved', 'conflict', 'failed']) snapshotsTotal.inc({ result }, 0)
 
 export const entriesTotal = new Counter({
   name: 'worker_snapshot_entries_total',

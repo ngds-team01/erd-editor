@@ -16,21 +16,29 @@ export interface LogStore {
   trim(docId: string, minId: string): Promise<number>
 }
 
-export type Snapshot = { state: Uint8Array; lastStreamId: string }
+/** etag: 읽은 스냅샷의 버전. 올릴 때 "그사이 아무도 안 바꿨을 때만" 조건에 쓴다 */
+export type Snapshot = { state: Uint8Array; lastStreamId: string; etag: string }
 
 export interface SnapshotStore {
   /** 스냅샷이 없으면 null. 그 밖의 오류는 던진다 (그 문서는 이번 주기에 건너뛴다) */
   read(docId: string): Promise<Snapshot | null>
-  write(docId: string, state: Uint8Array, lastStreamId: string): Promise<void>
+  /**
+   * expectedEtag가 지금 저장된 스냅샷의 etag와 같을 때만 올린다 (null이면 스냅샷이 아직 없을 때만).
+   * 그사이 다른 워커가 바꿔서 조건이 안 맞으면 올리지 않고 false를 돌려준다.
+   */
+  write(docId: string, state: Uint8Array, lastStreamId: string, expectedEtag: string | null): Promise<boolean>
 }
 
 export type DocResult =
   | { status: 'unchanged' }
+  | { status: 'conflict' }
   | { status: 'saved'; entries: number; bytes: number; lastStreamId: string; trimmed: number }
 
 export type CycleResult = {
   docs: number
   saved: number
+  /** 다른 워커가 먼저 스냅샷을 바꿔서 올리지 않은 문서 (다음 주기에 다시 함) */
+  conflicts: number
   failed: number
   entries: number
   trimmed: number
@@ -92,7 +100,14 @@ export class Snapshotter {
       }
 
       const state = Y.encodeStateAsUpdate(doc)
-      await this.snapshots.write(docId, state, lastStreamId)
+      // 읽은 뒤 다른 워커가 스냅샷을 바꿨으면(워커가 2개 이상 돈 경우) 올리지 않는다.
+      // 늦은 워커가 옛 스냅샷 기준으로 덮어쓰면, 다른 워커가 그사이 잘라 낸 로그 구간이 어디에도 남지 않는다.
+      const written = await this.snapshots.write(docId, state, lastStreamId, previous?.etag ?? null)
+      if (!written) {
+        // 기억도 갱신하지 않고 자르지도 않는다. 다음 주기에 새 스냅샷을 읽어 다시 한다.
+        this.known.delete(docId)
+        return { status: 'conflict' }
+      }
       this.known.set(docId, lastStreamId)
 
       // 업로드에 성공한 뒤에만, 직전 스냅샷의 lastStreamId 기준으로 자른다 (한 세대 늦게).
@@ -115,7 +130,7 @@ export class Snapshotter {
   /** 모든 문서를 한 번씩 처리한다. 한 문서가 실패해도 나머지는 계속한다. */
   async runCycle(): Promise<CycleResult> {
     const docs = await this.log.listDocs()
-    const result: CycleResult = { docs: docs.length, saved: 0, failed: 0, entries: 0, trimmed: 0 }
+    const result: CycleResult = { docs: docs.length, saved: 0, conflicts: 0, failed: 0, entries: 0, trimmed: 0 }
     for (const docId of docs) {
       try {
         const doc = await this.snapshotDoc(docId)
@@ -123,6 +138,8 @@ export class Snapshotter {
           result.saved += 1
           result.entries += doc.entries
           result.trimmed += doc.trimmed
+        } else if (doc.status === 'conflict') {
+          result.conflicts += 1
         }
       } catch (err) {
         result.failed += 1

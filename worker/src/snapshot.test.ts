@@ -36,21 +36,44 @@ class MemoryLog implements LogStore {
   }
 }
 
+/** 메모리 S3. 올릴 때마다 etag가 바뀌고, 조건부 업로드(IfMatch·IfNoneMatch)를 흉내 낸다. */
 class MemorySnapshots implements SnapshotStore {
   readonly objects = new Map<string, Snapshot>()
   reads = 0
   failRead = false
   failWrite = false
+  /** true면 조건을 무시하고 항상 덮어쓴다 (조건부 업로드가 없을 때와 비교용) */
+  ignoreCondition = false
+  /** 설정하면 write가 이 Promise가 끝날 때까지 멈춘다 (느린 워커 흉내) */
+  writeGate: Promise<void> | undefined
+  private version = 0
 
   async read(docId: string) {
     this.reads += 1
     if (this.failRead) throw new Error('read failed')
     return this.objects.get(docId) ?? null
   }
-  async write(docId: string, state: Uint8Array, lastStreamId: string) {
+  async write(docId: string, state: Uint8Array, lastStreamId: string, expectedEtag: string | null) {
+    if (this.writeGate) await this.writeGate
     if (this.failWrite) throw new Error('write failed')
-    this.objects.set(docId, { state, lastStreamId })
+    const current = this.objects.get(docId)
+    const matches = expectedEtag === null ? current === undefined : current?.etag === expectedEtag
+    if (!matches && !this.ignoreCondition) return false
+    this.objects.set(docId, { state, lastStreamId, etag: `"v${++this.version}"` })
+    return true
   }
+}
+
+/** 같은 S3를 보지만 write만 따로 멈출 수 있는 창구 (워커마다 하나) */
+function view(store: MemorySnapshots): SnapshotStore & { gate?: Promise<void> } {
+  const v: SnapshotStore & { gate?: Promise<void> } = {
+    read: (docId) => store.read(docId),
+    write: async (docId, state, id, etag) => {
+      if (v.gate) await v.gate
+      return store.write(docId, state, id, etag)
+    },
+  }
+  return v
 }
 
 /** 편집 서버 역할: 문서를 고칠 때마다 업데이트를 로그에 기록한다. */
@@ -220,6 +243,74 @@ describe('Snapshotter', () => {
     assert.deepEqual(await restore(log, snapshots.objects.get('d1'), 'd1'), { t1: 'users', t2: 'posts' })
   })
 
+  it('워커가 2개 돌아도, 늦은 워커는 옛 스냅샷 기준으로 덮어쓰지 않는다 (조건부 업로드)', async () => {
+    const run = async (ignoreCondition: boolean) => {
+      const log = new MemoryLog()
+      const store = new MemorySnapshots()
+      store.ignoreCondition = ignoreCondition
+      const a = editor(log, 'd1')
+      const slowView = view(store)
+      const slow = new Snapshotter(log, slowView)
+      const fast = new Snapshotter(log, view(store))
+
+      a.set('t1', 'users')
+      await fast.snapshotDoc('d1') // 1세대
+      a.set('t2', 'posts')
+      // 느린 워커: 1세대를 읽고 업로드 직전에 멈춤
+      let release!: () => void
+      slowView.gate = new Promise((resolve) => (release = resolve))
+      const slowRun = slow.snapshotDoc('d1')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      // 그사이 빠른 워커가 2·3·4세대를 올리며 로그를 자른다 (한 세대 늦게 자르므로 t3 기록은 4세대 때 잘림)
+      a.set('t3', 'tags')
+      await fast.snapshotDoc('d1')
+      a.set('t4', 'likes')
+      await fast.snapshotDoc('d1')
+      a.set('t5', 'follows')
+      await fast.snapshotDoc('d1')
+      release()
+      const slowResult = await slowRun
+      return { slowResult, restored: await restore(log, store.objects.get('d1'), 'd1') }
+    }
+
+    const all = { t1: 'users', t2: 'posts', t3: 'tags', t4: 'likes', t5: 'follows' }
+
+    // 조건 없이 덮어쓰면: 느린 워커의 옛 스냅샷(t1·t2까지) 뒤 구간(t3)이 이미 잘려서 사라진다 (리뷰에서 지적한 경우).
+    // t3가 빠지면 같은 사용자의 뒤 기록(t4·t5)도 Yjs가 대기 상태로만 들고 있어 함께 안 보인다.
+    const unsafe = await run(true)
+    assert.equal(unsafe.slowResult.status, 'saved')
+    assert.deepEqual(unsafe.restored, { t1: 'users', t2: 'posts' })
+
+    // 조건부 업로드면: 느린 워커는 올리지 않고(conflict), 편집은 하나도 사라지지 않는다
+    const safe = await run(false)
+    assert.deepEqual(safe.slowResult, { status: 'conflict' })
+    assert.deepEqual(safe.restored, all)
+  })
+
+  it('conflict가 난 문서는 다음 주기에 새 스냅샷을 읽어 이어서 한다', async () => {
+    const log = new MemoryLog()
+    const store = new MemorySnapshots()
+    const a = editor(log, 'd1')
+    const worker = new Snapshotter(log, store)
+    a.set('t1', 'users')
+    await worker.snapshotDoc('d1')
+    a.set('t2', 'posts')
+    // 다른 워커가 먼저 바꾼 것처럼 etag만 바꿔 둔다
+    const current = store.objects.get('d1')!
+    store.objects.set('d1', { ...current, etag: '"other"' })
+
+    // 이 워커는 아직 옛 etag를 모르니 이번엔 읽은 걸로 올린다. 대신 미리 읽은 etag로 경합을 만든다
+    const racing = new Snapshotter(log, {
+      read: async (docId) => ({ ...(await store.read(docId))!, etag: '"stale"' }),
+      write: (docId, state, id, etag) => store.write(docId, state, id, etag),
+    })
+    assert.deepEqual(await racing.snapshotDoc('d1'), { status: 'conflict' })
+
+    const next = await worker.snapshotDoc('d1')
+    assert.equal(next.status, 'saved')
+    assert.deepEqual(await restore(log, store.objects.get('d1'), 'd1'), { t1: 'users', t2: 'posts' })
+  })
+
   it('한 주기에서 한 문서가 실패해도 나머지 문서는 처리한다', async () => {
     const log = new MemoryLog()
     const snapshots = new MemorySnapshots()
@@ -230,11 +321,11 @@ describe('Snapshotter', () => {
         if (docId === 'd1') throw new Error('read failed')
         return snapshots.read(docId)
       },
-      write: (docId, state, id) => snapshots.write(docId, state, id),
+      write: (docId, state, id, etag) => snapshots.write(docId, state, id, etag),
     })
 
     const result = await broken.runCycle()
-    assert.deepEqual(result, { docs: 2, saved: 1, failed: 1, entries: 1, trimmed: 0 })
+    assert.deepEqual(result, { docs: 2, saved: 1, conflicts: 0, failed: 1, entries: 1, trimmed: 0 })
     assert.ok(snapshots.objects.has('d2'))
   })
 })

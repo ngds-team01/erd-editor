@@ -40,12 +40,14 @@ async function cycle() {
     const seconds = end()
     lastCycleTimestamp.setToCurrentTime()
     snapshotsTotal.inc({ result: 'saved' }, result.saved)
+    snapshotsTotal.inc({ result: 'conflict' }, result.conflicts)
     snapshotsTotal.inc({ result: 'failed' }, result.failed)
     entriesTotal.inc(result.entries)
     trimmedTotal.inc(result.trimmed)
-    if (result.saved > 0 || result.failed > 0) {
+    if (result.saved > 0 || result.failed > 0 || result.conflicts > 0) {
+      const conflicts = result.conflicts > 0 ? `, 다른 워커가 먼저 바꿔서 건너뜀 ${result.conflicts}개` : ''
       console.log(
-        `[${config.name}] 스냅샷 ${result.saved}개 저장, 실패 ${result.failed}개 ` +
+        `[${config.name}] 스냅샷 ${result.saved}개 저장, 실패 ${result.failed}개${conflicts} ` +
           `(문서 ${result.docs}개, 반영 ${result.entries}항목, 정리 ${result.trimmed}항목, ${seconds.toFixed(2)}초)`,
       )
     }

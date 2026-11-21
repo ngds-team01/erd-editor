@@ -43,7 +43,9 @@ export const s3Snapshots: SnapshotStore = {
       // 메타데이터가 없는 스냅샷은 어디까지 반영됐는지 모르므로 '0'으로 보고 남은 로그를 전부 다시 적용한다.
       // (Yjs 업데이트는 여러 번 적용해도 결과가 같다)
       const lastStreamId = res.Metadata?.[LAST_STREAM_ID] ?? '0'
-      return { state, lastStreamId }
+      // 조건부 업로드에 쓴다. S3·MinIO는 항상 돌려주므로 없으면 이상한 응답으로 보고 이 문서를 건너뛴다.
+      if (!res.ETag) throw new Error('스냅샷 응답에 ETag가 없음')
+      return { state, lastStreamId, etag: res.ETag }
     } catch (err) {
       // 아직 스냅샷이 없는 문서. 그 밖의 오류(버킷 없음, 접속 실패 등)는 그대로 던져서 이 문서를 건너뛴다.
       if (isNotFound(err)) return null
@@ -51,15 +53,24 @@ export const s3Snapshots: SnapshotStore = {
     }
   },
 
-  async write(docId, state, lastStreamId) {
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: config.s3Bucket,
-        Key: snapshotKey(docId),
-        Body: state,
-        ContentType: 'application/octet-stream',
-        Metadata: { [LAST_STREAM_ID]: lastStreamId },
-      }),
-    )
+  async write(docId, state, lastStreamId, expectedEtag) {
+    try {
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: config.s3Bucket,
+          Key: snapshotKey(docId),
+          Body: state,
+          ContentType: 'application/octet-stream',
+          Metadata: { [LAST_STREAM_ID]: lastStreamId },
+          // 조건부 업로드: 읽은 뒤 아무도 안 바꿨을 때만 (없던 스냅샷이면 지금도 없을 때만)
+          ...(expectedEtag ? { IfMatch: expectedEtag } : { IfNoneMatch: '*' }),
+        }),
+      )
+      return true
+    } catch (err) {
+      // 412: 조건이 안 맞음 (다른 워커가 먼저 올림), 409: 같은 키에 조건부 업로드가 동시에 들어옴
+      if (err instanceof S3ServiceException && [412, 409].includes(err.$metadata.httpStatusCode ?? 0)) return false
+      throw err
+    }
   },
 }
