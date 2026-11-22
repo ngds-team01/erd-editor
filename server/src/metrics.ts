@@ -39,7 +39,7 @@ export const syncLatency = new Histogram({
   registers: [register],
 })
 
-/** contracts 6.4의 2~3단계(스냅샷 읽기 + 로그 적용) 소요 시간. 3주차 복원 구현 때 값을 넣는다. */
+/** contracts 6.4의 2~3단계(스냅샷 읽기 + Streams 기록 적용) 소요 시간. 문서를 처음 열 때마다 한 번 기록한다 (doc.ts). */
 export const docRestoreSeconds = new Histogram({
   name: 'editor_doc_restore_seconds',
   help: '문서 복원(스냅샷 + Streams 로그 적용) 소요 시간',
