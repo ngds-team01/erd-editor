@@ -35,6 +35,29 @@ describe('relationGeometry', () => {
   })
 })
 
+describe('label', () => {
+  it('두 table 사이 직선 구간의 가운데', () => {
+    // 꺾이는 점 (224, 50)과 (376, 50)의 중점
+    expect(relationGeometry(box(0, 0), box(400, 0), false).label).toEqual({ x: 300, y: 50 })
+  })
+
+  it('비스듬한 직선이면 가로·세로 모두 가운데', () => {
+    // 부모 아래 변 (100, 100) → (100, 124), 자식 위 변 (350, 400) → (350, 376)
+    expect(relationGeometry(box(0, 0), box(250, 400), false).label).toEqual({ x: 225, y: 250 })
+  })
+
+  it('자기 참조는 고리 바깥쪽 세로선의 가운데', () => {
+    // 세로선 (240, 30) → (240, 70)
+    expect(relationGeometry(box(0, 0), box(0, 0), true).label).toEqual({ x: 240, y: 50 })
+  })
+
+  it('소수 첫째 자리까지 반올림', () => {
+    // 꺾이는 점 (224, 50)과 (376.25, 50.15)의 중점 = (300.125, 50.075)
+    const child = { x: 400.25, y: 0.15, width: 200, height: 100 }
+    expect(relationGeometry(box(0, 0), child, false).label).toEqual({ x: 300.1, y: 50.1 })
+  })
+})
+
 describe('markers', () => {
   const anchor = { x: 100, y: 50, dx: 1, dy: 0 }
 
