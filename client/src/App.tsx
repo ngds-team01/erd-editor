@@ -9,7 +9,7 @@ import { RelationPanel } from './panel/RelationPanel'
 import { TablePanel } from './panel/TablePanel'
 import type { Connection } from './sync/connection'
 import { pickEditing, setEditing } from './sync/presence'
-import type { Editing } from './sync/presence'
+import type { TableEditing } from './sync/presence'
 
 // Toolbar와 Canvas가 공유할 문서 연결
 type AppProps = {
@@ -29,7 +29,7 @@ function App({ connection }: AppProps) {
   // 캔버스에서 선택한 table id 목록 (내 화면에만 있는 값, 편집 중 표시에 사용)
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>([])
   // 패널에서 포커스가 있는 column, 없으면 null (내 화면에만 있는 값)
-  const [focusedColumn, setFocusedColumn] = useState<Editing | null>(null)
+  const [focusedColumn, setFocusedColumn] = useState<TableEditing | null>(null)
 
   // 아래 함수들은 Canvas·패널의 구독 의존 값이므로 useCallback으로 같은 함수를 유지해 매 렌더링 재구독을 막음
   const closePanel = useCallback(() => setPanel(null), [])
@@ -49,10 +49,13 @@ function App({ connection }: AppProps) {
   }, [])
 
   // 패널·포커스·선택이 바뀌면 내 편집 대상을 다시 정해 awareness에 올림 (값이 같으면 setEditing이 보내지 않음)
-  const panelTableId = panel?.kind === 'table' ? panel.id : null
+  // selectedRelationIds: 선택한 관계선은 2단계에서 Canvas가 알려주도록 연결, 지금은 빈 목록
   useEffect(() => {
-    setEditing(awareness, pickEditing(panelTableId, focusedColumn, selectedTableIds))
-  }, [awareness, panelTableId, focusedColumn, selectedTableIds])
+    setEditing(
+      awareness,
+      pickEditing({ panel, focusedColumn, selectedTableIds, selectedRelationIds: [] }),
+    )
+  }, [awareness, panel, focusedColumn, selectedTableIds])
 
   // 관계 버튼 클릭: 같은 버튼을 다시 누르면 관계 모드 해제, 다른 버튼이면 그 종류로 처음부터 다시 시작
   const toggleRelation = useCallback((kind: RelationKind) => {

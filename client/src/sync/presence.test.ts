@@ -4,10 +4,12 @@ import * as Y from 'yjs'
 import {
   collectEditors,
   collectPeers,
+  collectRelationEditors,
   createPeerStore,
   initPresence,
   loadUser,
   otherUsers,
+  parseEditing,
   parseUser,
   pickEditing,
   renameUser,
@@ -15,7 +17,7 @@ import {
   setEditing,
   USER_COLORS,
 } from './presence'
-import type { PresenceUser, UserStorage } from './presence'
+import type { EditingSources, PresenceUser, UserStorage } from './presence'
 
 const alice: PresenceUser = { id: 'u-alice', name: '졸린 수달', color: '#e5484d' }
 const bob: PresenceUser = { id: 'u-bob', name: '용감한 펭귄', color: '#0d74ce' }
@@ -59,6 +61,18 @@ describe('parseUser', () => {
     expect(parseUser({ id: 'x', name: '이름' })).toBeNull()
     expect(parseUser({ ...alice, color: 'red' })).toBeNull()
     expect(parseUser({ ...alice, name: '   ' })).toBeNull()
+  })
+})
+
+describe('parseEditing', () => {
+  it('테이블 형식과 관계 형식을 각각 인정', () => {
+    expect(parseEditing({ tableId: 't1', columnId: null })).toEqual({ tableId: 't1', columnId: null })
+    expect(parseEditing({ relationId: 'r1' })).toEqual({ relationId: 'r1' })
+  })
+
+  it('relationId가 문자열이 아니거나 tableId와 함께 있으면 null', () => {
+    expect(parseEditing({ relationId: 42 })).toBeNull()
+    expect(parseEditing({ relationId: 'r1', tableId: 't1', columnId: null })).toBeNull()
   })
 })
 
@@ -118,6 +132,21 @@ describe('collectPeers / collectEditors', () => {
     expect(editors.get('t1')?.map((peer) => peer.clientId)).toEqual([2, 3])
     expect(editors.get('t2')?.map((peer) => peer.clientId)).toEqual([4])
   })
+
+  it('관계 편집자는 관계별로만 묶고, 테이블 묶음에는 넣지 않음', () => {
+    const peers = collectPeers(
+      new Map<number, unknown>([
+        [2, { user: alice, editing: { relationId: 'r1' } }],
+        [3, { user: bob, editing: { relationId: 'r1' } }],
+        [4, { user: { ...bob, id: 'u-carol' }, editing: { tableId: 't1', columnId: null } }],
+      ]),
+      1,
+    )
+    const relationEditors = collectRelationEditors(peers)
+    expect(relationEditors.get('r1')?.map((peer) => peer.clientId)).toEqual([2, 3])
+    expect(relationEditors.has('t1')).toBe(false)
+    expect([...collectEditors(peers).keys()]).toEqual(['t1'])
+  })
 })
 
 describe('awareness 2개 사이 전달', () => {
@@ -151,6 +180,25 @@ describe('awareness 2개 사이 전달', () => {
     setEditing(mine, { tableId: 't1', columnId: null })
     setEditing(mine, { tableId: 't1', columnId: null })
     expect(updates).toBe(1)
+  })
+
+  it('관계 editing도 상대에게 전달되고, 같은 관계를 다시 넣으면 보내지 않음', () => {
+    const mine = newAwareness()
+    const theirs = newAwareness()
+    const store = createPeerStore(theirs)
+    initPresence(mine, alice)
+    let updates = 0
+    mine.on('update', () => updates++)
+
+    setEditing(mine, { tableId: 't1', columnId: null })
+    setEditing(mine, { relationId: 'r1' })
+    setEditing(mine, { relationId: 'r1' })
+    setEditing(mine, { relationId: 'r2' })
+    expect(updates).toBe(3)
+
+    relay(mine, theirs)
+    expect(store.getPeers()[0].editing).toEqual({ relationId: 'r2' })
+    expect(collectRelationEditors(store.getPeers()).has('r2')).toBe(true)
   })
 
   it('상대가 나가면 목록에서 빠지고, 바뀌지 않은 동안은 같은 배열을 돌려줌', () => {
@@ -225,23 +273,56 @@ describe('otherUsers', () => {
 })
 
 describe('pickEditing', () => {
-  it('패널이 열려 있으면 그 table, 포커스가 있는 column이 같은 table이면 함께', () => {
-    expect(pickEditing('t1', { tableId: 't1', columnId: 'c1' }, ['t2'])).toEqual({
-      tableId: 't1',
-      columnId: 'c1',
-    })
+  // 아무것도 열거나 고르지 않은 상태, 테스트마다 필요한 값만 덮어씀
+  const none: EditingSources = {
+    panel: null,
+    focusedColumn: null,
+    selectedTableIds: [],
+    selectedRelationIds: [],
+  }
+
+  it('table 패널이 열려 있으면 그 table, 포커스가 있는 column이 같은 table이면 함께', () => {
+    expect(
+      pickEditing({
+        ...none,
+        panel: { kind: 'table', id: 't1' },
+        focusedColumn: { tableId: 't1', columnId: 'c1' },
+        selectedTableIds: ['t2'],
+      }),
+    ).toEqual({ tableId: 't1', columnId: 'c1' })
   })
 
   it('포커스가 다른 table의 column이면 column은 무시', () => {
-    expect(pickEditing('t1', { tableId: 't2', columnId: 'c9' }, [])).toEqual({
-      tableId: 't1',
-      columnId: null,
-    })
+    expect(
+      pickEditing({
+        ...none,
+        panel: { kind: 'table', id: 't1' },
+        focusedColumn: { tableId: 't2', columnId: 'c9' },
+      }),
+    ).toEqual({ tableId: 't1', columnId: null })
   })
 
-  it('패널이 없으면 하나만 선택한 table, 여러 개거나 없으면 null', () => {
-    expect(pickEditing(null, null, ['t2'])).toEqual({ tableId: 't2', columnId: null })
-    expect(pickEditing(null, null, ['t1', 't2'])).toBeNull()
-    expect(pickEditing(null, null, [])).toBeNull()
+  it('관계 패널이 열려 있으면 선택과 상관없이 그 관계', () => {
+    expect(
+      pickEditing({
+        ...none,
+        panel: { kind: 'relation', id: 'r1' },
+        focusedColumn: { tableId: 't1', columnId: 'c1' },
+        selectedTableIds: ['t1'],
+        selectedRelationIds: ['r2'],
+      }),
+    ).toEqual({ relationId: 'r1' })
+  })
+
+  it('패널이 없으면 하나만 선택한 table 또는 관계선', () => {
+    expect(pickEditing({ ...none, selectedTableIds: ['t2'] })).toEqual({ tableId: 't2', columnId: null })
+    expect(pickEditing({ ...none, selectedRelationIds: ['r1'] })).toEqual({ relationId: 'r1' })
+  })
+
+  it('table과 관계선을 합쳐 여러 개를 선택했거나 아무것도 없으면 null', () => {
+    expect(pickEditing({ ...none, selectedTableIds: ['t1', 't2'] })).toBeNull()
+    expect(pickEditing({ ...none, selectedRelationIds: ['r1', 'r2'] })).toBeNull()
+    expect(pickEditing({ ...none, selectedTableIds: ['t1'], selectedRelationIds: ['r1'] })).toBeNull()
+    expect(pickEditing(none)).toBeNull()
   })
 })

@@ -5,6 +5,7 @@ import type { Node, NodeProps } from '@xyflow/react'
 import type * as Y from 'yjs'
 import { addNextColumn } from '../model'
 import type { ColumnData, TableData } from '../model'
+import { isTableEditing } from '../sync/presence'
 import type { Peer } from '../sync/presence'
 
 //React Flow Node에 TableData의 type 적용
@@ -67,10 +68,11 @@ function ColumnHeader() {
 }
 
 // column마다 그 column을 편집 중인 다른 사용자의 색, 여러 명이면 먼저 접속한 사람의 색
+// editors에는 테이블 편집자만 들어오지만, 타입상 관계 편집일 수도 있어 isTableEditing으로 걸러 columnId를 읽음
 function editorColorsByColumn(editors: Peer[]): Map<string, string> {
   const colors = new Map<string, string>()
   for (const { user, editing } of editors) {
-    if (editing?.columnId && !colors.has(editing.columnId)) {
+    if (editing && isTableEditing(editing) && editing.columnId && !colors.has(editing.columnId)) {
       colors.set(editing.columnId, user.color)
     }
   }

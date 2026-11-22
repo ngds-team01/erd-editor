@@ -27,9 +27,29 @@ export type PresenceUser = {
 }
 
 // 편집 중인 테이블, 컬럼 입력 중이면 columnId도 있음
-export type Editing = {
+export type TableEditing = {
   tableId: string
   columnId: string | null
+}
+
+// 편집 중인 관계 (관계선 선택 또는 관계 패널)
+export type RelationEditing = {
+  relationId: string
+}
+
+// 편집 대상은 테이블 또는 관계 중 하나 (3)
+export type Editing = TableEditing | RelationEditing
+
+// 편집 패널에 띄운 대상, App의 패널 상태와 같은 모양
+export type PanelTarget = { kind: 'table' | 'relation'; id: string }
+
+// 내 편집 대상을 정할 때 보는 화면 상태 (모두 내 화면에만 있는 값)
+// focusedColumn: 패널에서 포커스가 있는 column, selectedTableIds·selectedRelationIds: 캔버스에서 선택한 table·관계선
+export type EditingSources = {
+  panel: PanelTarget | null
+  focusedColumn: TableEditing | null
+  selectedTableIds: readonly string[]
+  selectedRelationIds: readonly string[]
 }
 
 // awareness에 올리는 내 상태 , cursor는 Should 항목이라 지금은 항상 null
@@ -85,15 +105,24 @@ export function parseUser(value: unknown): PresenceUser | null {
 }
 
 // 받은 값이 editing 형식이면 돌려주고, 아니면 null (편집 중 아님으로 취급)
+// relationId가 있으면 관계 형식만 인정, tableId까지 함께 있으면 어느 쪽인지 알 수 없어 null
 export function parseEditing(value: unknown): Editing | null {
   if (!isRecord(value)) {
     return null
   }
-  const { tableId, columnId } = value
+  const { tableId, columnId, relationId } = value
+  if (relationId !== undefined) {
+    return typeof relationId === 'string' && tableId === undefined ? { relationId } : null
+  }
   if (typeof tableId !== 'string' || (columnId !== null && typeof columnId !== 'string')) {
     return null
   }
   return { tableId, columnId }
+}
+
+// 편집 대상이 테이블인지 확인, 관계면 false (editing is TableEditing: 타입 가드)
+export function isTableEditing(editing: Editing): editing is TableEditing {
+  return 'tableId' in editing
 }
 
 // 무작위 이름과 색으로 새 사용자 생성
@@ -180,24 +209,39 @@ export function otherUsers(peers: Peer[], selfId: string | null): PresenceUser[]
 }
 
 // 내 편집 대상을 정함 (3)
-// 1순위: 패널이 열린 table, 패널 안 column 영역에 포커스가 있으면 그 column도 함께
-// 2순위: 패널이 없으면 하나만 선택한 table (여러 개를 고르면 하나로 정할 수 없어 null)
-// focusedColumn: 패널에서 포커스가 있는 column, 다른 table의 것이면 무시
-export function pickEditing(
-  panelTableId: string | null,
-  focusedColumn: Editing | null,
-  selectedTableIds: readonly string[],
-): Editing | null {
-  if (panelTableId !== null) {
-    const columnId = focusedColumn?.tableId === panelTableId ? focusedColumn.columnId : null
-    return { tableId: panelTableId, columnId }
+// 1순위: 패널이 열린 table, 패널 안 column 영역에 포커스가 있으면 그 column도 함께 (다른 table의 column이면 무시)
+// 2순위: 패널이 열린 관계
+// 3순위: 패널이 없으면 하나만 선택한 table 또는 관계선 (table과 관계선을 합쳐 여러 개면 하나로 정할 수 없어 null)
+export function pickEditing({
+  panel,
+  focusedColumn,
+  selectedTableIds,
+  selectedRelationIds,
+}: EditingSources): Editing | null {
+  if (panel?.kind === 'table') {
+    const columnId = focusedColumn?.tableId === panel.id ? focusedColumn.columnId : null
+    return { tableId: panel.id, columnId }
   }
-  return selectedTableIds.length === 1 ? { tableId: selectedTableIds[0], columnId: null } : null
+  if (panel?.kind === 'relation') {
+    return { relationId: panel.id }
+  }
+  if (selectedTableIds.length + selectedRelationIds.length !== 1) {
+    return null
+  }
+  return selectedTableIds.length === 1
+    ? { tableId: selectedTableIds[0], columnId: null }
+    : { relationId: selectedRelationIds[0] }
 }
 
-// 두 editing 값이 같은지 비교
+// 두 editing 값이 같은지 비교, 종류(테이블·관계)가 다르면 다름
 function sameEditing(a: Editing | null, b: Editing | null): boolean {
-  return a?.tableId === b?.tableId && a?.columnId === b?.columnId
+  if (a === null || b === null) {
+    return a === b
+  }
+  if (!isTableEditing(a) || !isTableEditing(b)) {
+    return !isTableEditing(a) && !isTableEditing(b) && a.relationId === b.relationId
+  }
+  return a.tableId === b.tableId && a.columnId === b.columnId
 }
 
 // 내 editing 값을 바꿈, 값이 그대로면 보내지 않음
@@ -225,21 +269,32 @@ export function collectPeers(states: Map<number, unknown>, selfClientId: number)
   return peers
 }
 
-// 다른 사용자 목록을 테이블별로 묶음, key = table id, value = 그 테이블을 편집 중인 사용자들
-export function collectEditors(peers: Peer[]): Map<string, Peer[]> {
+// 다른 사용자 목록을 keyOf가 돌려준 id별로 묶음, keyOf가 null을 돌려주는 사용자는 뺌
+function groupEditors(peers: Peer[], keyOf: (editing: Editing) => string | null): Map<string, Peer[]> {
   const editors = new Map<string, Peer[]>()
   for (const peer of peers) {
-    if (!peer.editing) {
+    const key = peer.editing ? keyOf(peer.editing) : null
+    if (key === null) {
       continue
     }
-    const list = editors.get(peer.editing.tableId)
+    const list = editors.get(key)
     if (list) {
       list.push(peer)
     } else {
-      editors.set(peer.editing.tableId, [peer])
+      editors.set(key, [peer])
     }
   }
   return editors
+}
+
+// 다른 사용자 목록을 테이블별로 묶음, key = table id, value = 그 테이블을 편집 중인 사용자들
+export function collectEditors(peers: Peer[]): Map<string, Peer[]> {
+  return groupEditors(peers, (editing) => (isTableEditing(editing) ? editing.tableId : null))
+}
+
+// 다른 사용자 목록을 관계별로 묶음, key = relation id, value = 그 관계를 편집 중인 사용자들
+export function collectRelationEditors(peers: Peer[]): Map<string, Peer[]> {
+  return groupEditors(peers, (editing) => (isTableEditing(editing) ? null : editing.relationId))
 }
 
 // React의 useSyncExternalStore로 구독할 수 있는 다른 사용자 목록과 내 사용자 정보
