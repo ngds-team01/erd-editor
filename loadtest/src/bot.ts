@@ -4,6 +4,7 @@ import * as Y from 'yjs'
 import { DEFAULT_LIMITS, randomEdit } from './actions'
 import type { ActionName, EditLimits } from './actions'
 import { createRandom } from './random'
+import { attachReconnect } from './reconnect'
 
 // 드래그 중 position을 쓰는 간격 (contracts 2.7: 최대 50ms에 한 번)
 const DRAG_INTERVAL_MS = 50
@@ -52,6 +53,18 @@ export function createBot(options: BotOptions): Bot {
   const provider = new WebsocketProvider(url, docId, doc, {
     WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket,
     disableBc: true,
+    // 서버가 닫았을 때의 재접속은 attachReconnect가 close code를 보고 직접 처리 (contracts 4.3)
+    shouldReconnect: () => false,
+  })
+  // 재접속할 때마다 close code와 대기 시간을 출력, 재접속 간격이 0.5s → 1s … 로 늘어나는지 로그로 확인
+  const reconnector = attachReconnect(provider, (event) => {
+    if (event.kind === 'stop') {
+      console.error(`봇 ${index}: 서버가 문서 주소를 거부해 재접속하지 않습니다 (code ${event.code})`)
+      return
+    }
+    console.log(
+      `봇 ${index}: 끊김 (code ${event.code}) → ${Math.round(event.delayMs)}ms 뒤 재접속 (연속 실패 ${event.attempt}회)`,
+    )
   })
   // 봇마다 시드를 다르게 해서 서로 다른 편집을 하게 함
   const random = createRandom(seed + index)
@@ -127,7 +140,11 @@ export function createBot(options: BotOptions): Bot {
       running = false
       await loop
     },
-    destroy: () => provider.destroy(),
+    // 재접속 대기 중에 끝내면 걸어 둔 타이머가 닫은 봇을 다시 접속시키므로 먼저 취소
+    destroy: () => {
+      reconnector.cancel()
+      provider.destroy()
+    },
   }
 }
 
