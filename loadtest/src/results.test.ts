@@ -22,6 +22,7 @@ function record(overrides: Partial<RunRecord> = {}): RunRecord {
     actions: 20,
     updatesSent: 80,
     disconnects: 0,
+    load: [],
     eventLoop: { utilization: 0.05, lagP50Ms: 0.1, lagP99Ms: 0.5, lagMaxMs: 2 },
     logs: [],
     ...overrides,
@@ -64,6 +65,36 @@ describe('summaryCsv', () => {
     assert.equal(column(withoutProbe, 'update_sent'), '')
     assert.equal(column(withoutProbe, 'passed'), 'true')
     assert.equal(column(withoutProbe, 'seed'), '42')
+  })
+})
+
+describe('summaryCsv 부하 열', () => {
+  it('부하 프로세스 합계를 더하고, 바쁜 시간은 가장 바빴던 프로세스 값을 남김', () => {
+    const loop = (utilization: number, lagMaxMs: number) => ({ utilization, lagP50Ms: 0, lagP99Ms: 0, lagMaxMs })
+    const stat = (bots: number, editCount: number, utilization: number, lagMaxMs: number) => ({
+      bots,
+      actions: { drag: editCount },
+      updatesSent: editCount * 3,
+      messagesReceived: 1000,
+      bytesReceived: 100_000,
+      disconnects: 0,
+      eventLoop: loop(utilization, lagMaxMs),
+    })
+    const rows = parseCsv(summaryCsv(record({ load: [stat(31, 100, 0.2, 15), stat(31, 120, 0.35, 40)] })))
+    const column = (name: string) => rows[1][rows[0].indexOf(name)]
+
+    assert.equal(column('load_bots'), '62')
+    assert.equal(column('load_processes'), '2')
+    assert.equal(column('load_actions'), '220')
+    assert.equal(column('load_updates_sent'), '660')
+    assert.equal(column('load_event_loop_utilization_max'), '0.35')
+    assert.equal(column('load_event_loop_lag_max_ms'), '40')
+
+    // 부하 봇이 없으면 개수는 0, 바쁜 시간은 빈칸 (열 순서는 같음)
+    const empty = parseCsv(summaryCsv(record()))
+    assert.deepEqual(empty[0], rows[0])
+    assert.equal(empty[1][empty[0].indexOf('load_bots')], '0')
+    assert.equal(empty[1][empty[0].indexOf('load_event_loop_utilization_max')], '')
   })
 })
 

@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EventLoopSummary } from './eventLoop'
+import type { LoadStats } from './loadProcess'
 import type { ProbeLog, ProbePath, ProbeSample } from './probe'
 import { summarize } from './stats'
 
@@ -38,6 +39,9 @@ export type RunRecord = {
   actions: number
   updatesSent: number
   disconnects: number
+  // 부하 프로세스마다의 통계 (위 actions·updatesSent·disconnects는 이 프로세스의 정식 봇만), 부하 봇이 없으면 빈 배열
+  load: LoadStats[]
+  // 이 프로세스(측정·수렴 확인)의 이벤트 루프
   eventLoop: EventLoopSummary
   // 측정을 끈 실행은 빈 배열
   logs: ProbeLog[]
@@ -96,6 +100,7 @@ export function summaryCsv(record: RunRecord): string {
     ['event_loop_lag_p50_ms', ms(record.eventLoop.lagP50Ms)],
     ['event_loop_lag_p99_ms', ms(record.eventLoop.lagP99Ms)],
     ['event_loop_lag_max_ms', ms(record.eventLoop.lagMaxMs)],
+    ...loadColumns(record.load),
   ]
   // 경로마다 같은 7칸, 기록이 없는 경로(측정을 끔)는 빈칸으로 채워 열 순서를 유지
   for (const probePath of PROBE_PATHS) {
@@ -115,6 +120,24 @@ export function summaryCsv(record: RunRecord): string {
     columns.map(([header]) => header),
     [columns.map(([, value]) => value)],
   )
+}
+
+// 부하 프로세스 합계 열, 부하 봇이 없으면 개수는 0, 바쁜 시간은 빈칸
+// 바쁜 시간은 프로세스마다 따로이므로 가장 바빴던 프로세스 값을 남김 (부하를 요청대로 만들었는지 판단용)
+function loadColumns(load: readonly LoadStats[]): [string, Cell][] {
+  const total = (pick: (stat: LoadStats) => number) => load.reduce((sum, stat) => sum + pick(stat), 0)
+  const loops = load.flatMap((stat) => (stat.eventLoop ? [stat.eventLoop] : []))
+  const max = (pick: (loop: EventLoopSummary) => number) => (loops.length > 0 ? ms(Math.max(...loops.map(pick))) : null)
+  return [
+    ['load_bots', total((stat) => stat.bots)],
+    ['load_processes', load.length],
+    ['load_actions', total((stat) => Object.values(stat.actions).reduce((sum, count) => sum + count, 0))],
+    ['load_updates_sent', total((stat) => stat.updatesSent)],
+    ['load_messages_received', total((stat) => stat.messagesReceived)],
+    ['load_disconnects', total((stat) => stat.disconnects)],
+    ['load_event_loop_utilization_max', max((loop) => loop.utilization)],
+    ['load_event_loop_lag_max_ms', max((loop) => loop.lagMaxMs)],
+  ]
 }
 
 function numberOption(record: RunRecord, key: string): number | null {
