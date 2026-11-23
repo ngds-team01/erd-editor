@@ -9,11 +9,13 @@
   },
   "scripts": {
     "bot": "tsx src/index.ts",
-    "test": "tsx --test src/converge.test.ts src/reconnect.test.ts src/actions.test.ts src/probe.test.ts src/eventLoop.test.ts src/results.test.ts",
+    "test": "tsx --test src/converge.test.ts src/reconnect.test.ts src/actions.test.ts src/probe.test.ts src/eventLoop.test.ts src/results.test.ts src/lightBot.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "lib0": "^0.2.120",
     "ws": "^8.22.0",
+    "y-protocols": "^1.0.7",
     "y-websocket": "^3.1.0",
     "yjs": "file:../client/node_modules/yjs"
   },
