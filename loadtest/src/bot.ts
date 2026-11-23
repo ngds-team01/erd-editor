@@ -3,11 +3,14 @@ import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 import { DEFAULT_LIMITS, randomEdit } from './actions'
 import type { ActionName, EditLimits } from './actions'
+import { createUser, initPresence, setEditing } from './presence'
 import { createRandom } from './random'
 import { attachReconnect } from './reconnect'
 
 // 드래그 중 position을 쓰는 간격 (contracts 2.7: 최대 50ms에 한 번)
 const DRAG_INTERVAL_MS = 50
+// 이름·색용 시드를 편집용 시드(seed + 봇 번호)와 겹치지 않게 띄우는 값, 봇 수가 이보다 적으면 겹치지 않음
+const USER_SEED_OFFSET = 1_000_000
 
 export type BotOptions = {
   // 서버 주소, provider가 뒤에 /{docId}를 붙임 (contracts 4.1)
@@ -69,6 +72,10 @@ export function createBot(options: BotOptions): Bot {
   // 봇마다 시드를 다르게 해서 서로 다른 편집을 하게 함
   const random = createRandom(seed + index)
   const stats: BotStats = { actions: {}, updatesSent: 0, disconnects: 0 }
+  // 브라우저 클라이언트처럼 사용자 정보를 awareness에 올림, 접속 전이면 접속하자마자 전송
+  // 이름·색은 편집용과 다른 시드 난수로 골라, 시드에 따른 편집 순서에 영향을 미치지 않는다
+  const userRandom = createRandom(seed + index + USER_SEED_OFFSET)
+  initPresence(provider.awareness, createUser(() => userRandom.next()))
 
   // origin: 변경을 일으킨 쪽, 서버에서 받은 변경은 provider, 내가 한 편집은 null
   doc.on('update', (_update: Uint8Array, origin: unknown) => {
@@ -90,9 +97,11 @@ export function createBot(options: BotOptions): Bot {
   const dragWait = () => sleep(DRAG_INTERVAL_MS)
 
   // 편집 1번, 드래그면 좌표를 50ms마다 나눠 씀
+  // 편집한 대상을 awareness editing에 올림, 대상이 그대로면 setEditing이 보내지 않음 (client와 같음)
   async function editOnce(): Promise<void> {
-    const action = await randomEdit(doc, random, limits, dragWait)
+    const { action, editing } = await randomEdit(doc, random, limits, dragWait)
     stats.actions[action] = (stats.actions[action] ?? 0) + 1
+    setEditing(provider.awareness, editing)
   }
 
   async function run(): Promise<void> {

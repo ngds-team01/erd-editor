@@ -15,6 +15,7 @@ import {
   updateTable,
 } from './model'
 import type { ColumnPatch, Position } from './model'
+import type { Editing } from './presence'
 import type { Random } from './random'
 
 // 봇이 하는 편집 종류
@@ -135,7 +136,8 @@ export async function performDrag(doc: Y.Doc, drag: Drag, wait: () => Promise<vo
   }
 }
 
-// 드래그를 제외한 편집 1번을 실행, 실제로 문서를 바꿨으면 true
+// 드래그를 제외한 편집 1번을 실행하고, 편집한 대상을 awareness editing 모양으로 돌려줌
+// 아무것도 바꾸지 않았거나, 대상을 지워서 편집 중으로 표시할 것이 없으면 null
 // 드래그는 시간에 걸쳐 여러 번 쓰므로 performDrag가 따로 처리
 // Exclude<ActionName, 'drag'>: 편집 이름 중 'drag'만 뺀 타입, 'drag'를 넘기면 타입 오류
 export function applyAction(
@@ -143,61 +145,81 @@ export function applyAction(
   random: Random,
   action: Exclude<ActionName, 'drag'>,
   limits: EditLimits = DEFAULT_LIMITS,
-): boolean {
+): Editing | null {
   switch (action) {
     case 'createTable': {
       const number = random.int(1, 999)
       const position = { x: random.int(0, CANVAS_SIZE), y: random.int(0, CANVAS_SIZE) }
-      createTable(doc, { logicalName: `테이블${number}`, physicalName: `table_${number}`, position })
-      return true
+      const tableId = createTable(doc, { logicalName: `테이블${number}`, physicalName: `table_${number}`, position })
+      return tableEditing(tableId)
     }
     case 'renameTable': {
       const tableId = randomTableId(doc, random)
       const number = random.int(1, 999)
-      return !!tableId && updateTable(doc, tableId, { logicalName: `테이블${number}`, physicalName: `table_${number}` })
+      const changed =
+        !!tableId && updateTable(doc, tableId, { logicalName: `테이블${number}`, physicalName: `table_${number}` })
+      return changed ? tableEditing(tableId) : null
     }
     case 'recolorTable': {
       const tableId = randomTableId(doc, random)
       const color = random.pick(TABLE_COLORS)
-      return !!tableId && !!color && updateTable(doc, tableId, { color: color.value })
+      const changed = !!tableId && !!color && updateTable(doc, tableId, { color: color.value })
+      return changed ? tableEditing(tableId) : null
     }
     case 'deleteTable': {
+      // 지운 테이블은 더 이상 편집 중으로 표시할 수 없음
       const tableId = randomTableId(doc, random)
-      return !!tableId && deleteTable(doc, tableId)
+      if (tableId) {
+        deleteTable(doc, tableId)
+      }
+      return null
     }
     case 'addColumn': {
       const tableId = randomTableId(doc, random)
       const table = tableId && getTables(doc).get(tableId)
       if (!tableId || !table || getColumns(table).size >= limits.maxColumns) {
-        return false
+        return null
       }
       const type = random.pick(COLUMN_TYPES) ?? 'INT'
-      return addColumn(doc, tableId, { physicalName: `column_${random.int(1, 999)}`, type }) !== null
+      const columnId = addColumn(doc, tableId, { physicalName: `column_${random.int(1, 999)}`, type })
+      return columnId === null ? null : { tableId, columnId }
     }
     case 'editColumn': {
       const target = randomColumn(doc, random)
-      return !!target && updateColumn(doc, target.tableId, target.columnId, randomColumnPatch(random))
+      const changed = !!target && updateColumn(doc, target.tableId, target.columnId, randomColumnPatch(random))
+      return changed ? { tableId: target.tableId, columnId: target.columnId } : null
     }
     case 'moveColumn': {
       const target = randomColumn(doc, random)
-      return !!target && moveColumn(doc, target.tableId, target.columnId, random.int(0, target.columnCount - 1))
+      const changed =
+        !!target && moveColumn(doc, target.tableId, target.columnId, random.int(0, target.columnCount - 1))
+      return changed ? { tableId: target.tableId, columnId: target.columnId } : null
     }
     case 'deleteColumn': {
       const target = randomColumn(doc, random)
-      // 컬럼이 하나뿐인 테이블은 비우지 않음
-      return !!target && target.columnCount > 1 && deleteColumn(doc, target.tableId, target.columnId)
+      // 컬럼이 하나뿐인 테이블은 비우지 않음, 지운 뒤에는 테이블만 편집 중으로 남김
+      const changed =
+        !!target && target.columnCount > 1 && deleteColumn(doc, target.tableId, target.columnId)
+      return changed ? tableEditing(target.tableId) : null
     }
     case 'createRelation': {
       // 자기 참조도 허용 (contracts 2.5)
       const fromTable = randomTableId(doc, random)
       const toTable = randomTableId(doc, random)
       if (!fromTable || !toTable) {
-        return false
+        return null
       }
       const cardinality = random.chance(0.7) ? '1:N' : '1:1'
-      return createRelation(doc, { fromTable, toTable, cardinality, identifying: random.chance(0.3) }) !== null
+      const relationId = createRelation(doc, { fromTable, toTable, cardinality, identifying: random.chance(0.3) })
+      return relationId === null ? null : { relationId }
     }
   }
+}
+
+// 편집 1번의 결과: 편집 종류와 편집한 대상 (대상이 없으면 null)
+export type EditResult = {
+  action: ActionName
+  editing: Editing | null
 }
 
 // 편집 1번: pickAction으로 고르고, 드래그면 performDrag, 나머지는 applyAction으로 실행
@@ -207,18 +229,24 @@ export async function randomEdit(
   random: Random,
   limits: EditLimits = DEFAULT_LIMITS,
   wait: () => Promise<void> = noWait,
-): Promise<ActionName> {
+): Promise<EditResult> {
   const action = pickAction(doc, random, limits)
   if (action === 'drag') {
     const drag = planDrag(doc, random)
-    if (drag) {
-      await performDrag(doc, drag, wait)
+    if (!drag) {
+      return { action, editing: null }
     }
-  } else {
-    // 위 if에서 'drag'를 걸렀으므로 TypeScript가 action을 'drag'가 아닌 타입으로 좁혀 줌
-    applyAction(doc, random, action, limits)
+    await performDrag(doc, drag, wait)
+    // 드래그 도중 다른 사용자가 테이블을 지웠으면 편집 중으로 남기지 않음
+    return { action, editing: getTables(doc).has(drag.tableId) ? tableEditing(drag.tableId) : null }
   }
-  return action
+  // 위 if에서 'drag'를 걸렀으므로 TypeScript가 action을 'drag'가 아닌 타입으로 좁혀 줌
+  return { action, editing: applyAction(doc, random, action, limits) }
+}
+
+// 테이블 전체를 편집 중 (패널을 열었지만 컬럼 칸에는 포커스가 없음)
+function tableEditing(tableId: string): Editing {
+  return { tableId, columnId: null }
 }
 
 // 기다리지 않고 바로 끝나는 wait

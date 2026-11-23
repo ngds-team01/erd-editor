@@ -1,7 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023"],
+    // DOM: client/src/sync/presence.ts가 브라우저의 window.sessionStorage를 참조함
+    // 봇은 그 함수(loadUser·saveUser)를 부르지 않으므로 실행에는 영향이 없고, 타입 검사만 통과시킴
+    "lib": ["ES2023", "DOM"],
     "module": "ESNext",
     // client/src/model은 확장자 없이 import하므로(Vite 방식) bundler 해석을 씀, 실행은 tsx가 담당
     "moduleResolution": "bundler",
