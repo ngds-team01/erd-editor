@@ -94,8 +94,10 @@ PASS · 편집 멈춤 후 0.0초 만에 봇 12개 + 관찰자 수렴 · hash fa4
 
 ## 받는 봇을 다른 파드에 붙이기
 
-HAProxy는 문서 ID로 파드를 고르므로(`balance uri`, contracts 7.4) 같은 문서의 봇은 모두 한 파드(홈 파드)에 붙는다.
-그대로 재면 Redis를 거치지 않는 같은 파드 안(LOCAL) 경로만 잰다. 파드 간(SHARED) 지연을 재려면 받는 봇만 다른 파드에 직접 붙인다.
+HAProxy는 문서 ID로 파드를 고르므로(`balance uri`, contracts 7.4) 같은 문서의 봇은 먼저 한 파드(홈 파드)에 붙는다.
+다만 `hash-balance-factor 125` 때문에 한 파드의 연결 수가 전체 평균의 125%를 넘으면 다음 연결은 다른 파드로 넘어간다.
+예를 들어 파드 2개에 봇 20개면 약 12개만 홈 파드에 붙고 나머지는 다른 파드에 붙어, `--receiver-url` 없이도 문서가 SHARED가 된다.
+그래서 보내는 봇(`--url`)이 어느 파드에 붙을지는 정할 수 없다. 받는 봇을 port-forward로 한 파드에 고정하고, 그 파드가 SHARED인지 확인한다.
 
 ```bash
 # 1. 편집 서버 파드 이름 확인 (기본 2개)
@@ -143,8 +145,11 @@ p50·p95는 충분하지만 p99는 맨 위 1~2개 값으로 정해져 실행마�
 접속자 수마다 3회씩, 받는 봇을 다른 파드에 붙여 잰다.
 
 ```bash
-# 파드 1개 기준값 (LOCAL): --receiver-url 없이
+# 파드 1개 기준값 (LOCAL): 파드를 1개로 줄이고 --receiver-url 없이
+# (파드 2개에서는 봇이 많으면 다른 파드로도 나뉘어 LOCAL이 되지 않음, 위 "받는 봇을 다른 파드에 붙이기")
+kubectl --context kind-erd scale deployment/editor --replicas=1
 npm run bot -- --bots 10 --duration 120 --probe --name exp1-local-10
+kubectl --context kind-erd scale deployment/editor --replicas=2
 
 # 파드 2개, 받는 봇은 다른 파드 (SHARED): 10 · 50 · 100 · 200명 × 3회
 npm run bot -- --bots 10  --duration 120 --probe --receiver-url ws://localhost:9001/ws --name exp1-shared-10
@@ -165,9 +170,13 @@ npm run bot -- --bots 200 --duration 120 --probe --receiver-url ws://localhost:9
 # 터미널 1: 길게 편집 (지우는 동안 계속 편집하도록)
 npm run bot -- --bots 20 --duration 300 --settle 60 --name exp2-kill
 
-# 터미널 2: 봇이 붙은 파드를 강제 종료
+# 터미널 2: 봇이 붙은 파드를 강제 종료 (파드마다 editor_docs를 보고 1인 파드)
+for p in $(kubectl --context kind-erd get pods -l app=editor -o name); do echo $p; kubectl --context kind-erd exec $p -- wget -qO- localhost:8080/metrics | grep '^editor_docs'; done
 kubectl --context kind-erd delete pod <파드 이름> --force --grace-period=0
 ```
+
+- 봇이 두 파드에 나뉘어 붙어 있으므로(위 `hash-balance-factor`), 지운 파드에 붙어 있던 봇만 끊긴다
+- 붙을 파드가 남아 있으면 첫 재접속에 바로 성공해 간격이 늘어나는 것이 보이지 않는다. 백오프까지 보려면 `kubectl --context kind-erd scale deployment/editor --replicas=0`으로 15초쯤 줄였다가 `--replicas=2`로 되돌린다 (0.5s → 1s → 2s → 4s → 8s → 최대 10s)
 
 - 봇 로그의 `끊김 (code 1006) → …ms 뒤 재접속` 줄과 마지막 PASS(끊긴 동안 한 편집도 병합됨)를 확인한다
 - `--force` 없이 지우면(`kubectl --context kind-erd delete pod <파드 이름>`) 서버가 SIGTERM을 받아 1012로 닫으므로(contracts 7.2), code 1012와 0~500ms 대기가 나와야 한다
