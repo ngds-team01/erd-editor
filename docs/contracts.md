@@ -154,12 +154,15 @@ Y.Doc 스키마 타입, 생성·이동·삭제 헬퍼, `canonicalJSON`은 `clien
 ```tsx
 awareness.setLocalState({
   user:    { id: string, name: string, color: string },  // color = '#rrggbb'
-  editing: { tableId: string, columnId: string | null } | null,  // 편집 중인 엔티티
+  editing: { tableId: string, columnId: string | null }  // 테이블(컬럼) 편집 중
+         | { relationId: string }                         // 관계 편집 중
+         | null,
   cursor:  { x: number, y: number } | null,  // 캔버스 좌표(화면 좌표 아님), Should 항목
 })
 ```
 
 - 서버는 awareness 내용을 해석하지 않고 그대로 중계만 한다. 다른 파드에 붙은 사용자에게는 `AWARENESS` 메시지(5.2)로 전달한다.
+- `editing`은 `tableId`와 `relationId` 중 하나만 가진다. 둘 다 있거나 형식이 맞지 않으면 받는 쪽은 편집 중이 아닌 것으로 본다.
 - `cursor`는 최대 50ms에 한 번만 갱신한다.
 
 ---
@@ -196,6 +199,8 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 | 1012 | 서버 재시작/종료 중 (graceful shutdown) | 0~500ms 무작위 지연 후 **즉시** 재접속 |
 | 4400 | 잘못된 docId | 재접속하지 않고 오류 표시 |
 | 그 외 / 비정상 끊김 | 장애 | 지수 백오프 0.5s → 1s → 2s … 최대 10s, ±20% 지터 |
+| (없음) 30초 무응답 | 클라이언트가 직접 끊음 (절전, 네트워크 전환 등으로 연결이 조용히 죽은 경우) | y-websocket 기본 재접속: 0.2s → 0.4s … 최대 2.5s, 지터 없음 |
+- 정상 연결에서는 awareness가 15초마다 갱신되고 서버가 보낸 사람에게도 되돌려 주므로, 30초 무응답은 연결이 실제로 끊겼을 때만 생긴다.
 - 재접속 후 SyncStep1·2로 끊긴 동안의 편집을 자동 병합한다(Yjs 기본 동작). 클라이언트는 별도 재전송 큐를 두지 않는다.
 
 ---
@@ -406,3 +411,4 @@ new S3Client({
 | v0.1.3 | 2026-11-10 | 해시 대상 명시, S3 키 이름, HAProxy 체크 주기 | 이지민 |
 | v0.1.4 | 2026-11-16 | 7.3 동기화 지연 버킷에 10ms 미만(1·2.5·5ms) 추가 | 이지민 |
 | v0.1.5 | 2026-11-21 | 2주차 반영: 2.7 컬럼 삭제 시 FK 관계 삭제, 5.3-3 SYNC1 조건, 6.3 워커 1개·조건부 업로드, 6.4 스냅샷을 못 읽을 때 복원, 7.3 워커 지표, 7.5 S3 접속 키 전달 방법 | 이지민 |
+| v0.1.6 | 2026-11-23 | 3 관계 편집 추가, 4.3 30초 무응답 끊김 시 재접속 동작 | 김령준 |
