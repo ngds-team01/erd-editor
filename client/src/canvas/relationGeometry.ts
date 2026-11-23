@@ -16,11 +16,19 @@ export type Anchor = {
   dy: number
 }
 
+// 캔버스 좌표의 점
+export type Point = {
+  x: number
+  y: number
+}
+
 // path: SVG path의 d 값, parent·child: 부모 쪽 끝, 자식 쪽 끝 (마커를 그릴 위치)
+// label: 편집 중인 사용자 이름표를 놓을 점 (가운데 구간의 중점)
 export type RelationGeometry = {
   path: string
   parent: Anchor
   child: Anchor
+  label: Point
 }
 
 // 관계선이 table 변에서 수직으로 빠져나오는 길이
@@ -34,8 +42,13 @@ function round(value: number): number {
 }
 
 // 점 배열을 'M x y L x y ...' 형식의 SVG path로 변환
-function toPath(points: { x: number; y: number }[]): string {
+function toPath(points: Point[]): string {
   return points.map((p, i) => `${i === 0 ? 'M' : 'L'}${round(p.x)} ${round(p.y)}`).join(' ')
+}
+
+// 두 점의 중점, path와 같은 기준으로 반올림
+function midpoint(a: Point, b: Point): Point {
+  return { x: round((a.x + b.x) / 2), y: round((a.y + b.y) / 2) }
 }
 
 // rect의 4변 중 other 쪽을 향한 변의 가운데 점을 선택
@@ -57,32 +70,34 @@ export function nearestAnchor(rect: Rect, other: Rect): Anchor {
 }
 
 // 부모와 자식 table을 잇는 관계선, 같은 table이면 오른쪽 변에 고리를 그림
+// 두 경우 모두 꺾이는 점 2개(parentBend, childBend)를 지나며, 이름표는 그 사이 구간의 중점에 둠
 export function relationGeometry(parentRect: Rect, childRect: Rect, selfLoop: boolean): RelationGeometry {
   if (selfLoop) {
-    // 오른쪽 변의 30% 높이에서 나가 70% 높이로 돌아오는 ㄷ자 고리
+    // 오른쪽 변의 30% 높이에서 나가 70% 높이로 돌아오는 ㄷ자 고리, 이름표는 고리 바깥쪽 세로선 가운데
     const right = parentRect.x + parentRect.width
     const parent = { x: right, y: parentRect.y + parentRect.height * 0.3, dx: 1, dy: 0 }
     const child = { x: right, y: parentRect.y + parentRect.height * 0.7, dx: 1, dy: 0 }
     const outX = right + LOOP_OUT
+    const parentBend = { x: outX, y: parent.y }
+    const childBend = { x: outX, y: child.y }
     return {
-      path: toPath([parent, { x: outX, y: parent.y }, { x: outX, y: child.y }, child]),
+      path: toPath([parent, parentBend, childBend, child]),
       parent,
       child,
+      label: midpoint(parentBend, childBend),
     }
   }
 
   const parent = nearestAnchor(parentRect, childRect)
   const child = nearestAnchor(childRect, parentRect)
+  // 각 변에서 STUB만큼 수직으로 나온 뒤 두 점을 직선으로 연결, 이름표는 그 직선의 가운데
+  const parentBend = { x: parent.x + parent.dx * STUB, y: parent.y + parent.dy * STUB }
+  const childBend = { x: child.x + child.dx * STUB, y: child.y + child.dy * STUB }
   return {
-    // 각 변에서 STUB만큼 수직으로 나온 뒤 두 점을 직선으로 연결
-    path: toPath([
-      parent,
-      { x: parent.x + parent.dx * STUB, y: parent.y + parent.dy * STUB },
-      { x: child.x + child.dx * STUB, y: child.y + child.dy * STUB },
-      child,
-    ]),
+    path: toPath([parent, parentBend, childBend, child]),
     parent,
     child,
+    label: midpoint(parentBend, childBend),
   }
 }
 

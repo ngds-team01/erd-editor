@@ -29,7 +29,7 @@ import {
   readTables,
 } from '../model'
 import type { RelationData, TableData } from '../model'
-import { collectEditors } from '../sync/presence'
+import { collectEditors, collectRelationEditors } from '../sync/presence'
 import type { Peer, PeerStore } from '../sync/presence'
 import { RelationEdge } from './RelationEdge'
 import type { RelationEdgeType } from './RelationEdge'
@@ -52,7 +52,7 @@ const DRAG_WRITE_INTERVAL_MS = 50
 // onClickTable: table node를 클릭했을 때 호출 (관계 모드면 부모·자식 선택, 아니면 패널 전환)
 // onOpenRelation: 관계선을 클릭했을 때 관계 편집 패널을 열 함수
 // relationMode: 관계 모드 상태 (아니면 null), onCancelRelation: Esc로 관계 모드를 끝낼 함수
-// onSelectTables: 선택한 table이 바뀔 때 id 목록을 알림, peers: 다른 사용자의 편집 중 표시에 쓸 목록 (3)
+// onSelect: 선택한 table·관계선이 바뀔 때 id 목록을 알림, peers: 다른 사용자의 편집 중 표시에 쓸 목록 (3)
 type CanvasProps = {
   doc: Y.Doc
   onOpenTable: (tableId: string) => void
@@ -61,8 +61,14 @@ type CanvasProps = {
   onClosePanel: () => void
   relationMode: RelationMode | null
   onCancelRelation: () => void
-  onSelectTables: (tableIds: string[]) => void
+  onSelect: (selection: CanvasSelection) => void
   peers: PeerStore
+}
+
+// 캔버스에서 선택한 table id 목록과 관계선(relation) id 목록
+export type CanvasSelection = {
+  tableIds: string[]
+  relationIds: string[]
 }
 
 // ReactFlow가 호출하는 드래그 이벤트 4개만 고른 type
@@ -210,6 +216,19 @@ function decorateNodes(
   })
 }
 
+// 화면에 넘길 edge에 다른 사용자의 편집 중 표시를 덧붙임 (decorateNodes와 같은 방식)
+// edges 상태와 Y.Doc에는 남지 않고, 편집자가 없는 edge는 같은 객체를 유지해 memo가 다시 그리지 않게 함
+// 고아 관계는 syncEdges가 이미 걸러 edges에 없으므로 표시도 붙지 않음
+function decorateEdges(edges: RelationEdgeType[], editors: Map<string, Peer[]>): RelationEdgeType[] {
+  if (editors.size === 0) {
+    return edges
+  }
+  return edges.map((edge) => {
+    const edgeEditors = editors.get(edge.id)
+    return edgeEditors && edge.data ? { ...edge, data: { ...edge.data, editors: edgeEditors } } : edge
+  })
+}
+
 // 관계 모드 안내 문구, 부모를 고르기 전과 후
 function relationHint(mode: RelationMode): string {
   return mode.parentId === null
@@ -260,7 +279,7 @@ export function Canvas({
   onClosePanel,
   relationMode,
   onCancelRelation,
-  onSelectTables,
+  onSelect,
   peers,
 }: CanvasProps) {
   // 함수를 넘겨 첫 렌더링 때만 문서 전체를 읽음
@@ -311,11 +330,19 @@ export function Canvas({
     () => decorateNodes(nodes, parentId, editors),
     [nodes, parentId, editors],
   )
+  // 같은 목록을 관계별로도 묶어, 다른 사용자가 편집 중인 관계선에 editors를 붙여 화면에 넘김
+  const relationEditors = useMemo(() => collectRelationEditors(peerList), [peerList])
+  const shownEdges = useMemo(() => decorateEdges(edges, relationEditors), [edges, relationEditors])
 
-  // 선택이 바뀌면 선택한 table id 목록을 App에 알림, React Flow 요구대로 같은 함수를 유지
+  // 선택이 바뀌면 선택한 table·관계선 id 목록을 App에 알림, React Flow 요구대로 같은 함수를 유지
+  // node.id = table id, edge.id = relation id
   const handleSelectionChange = useCallback<OnSelectionChangeFunc<TableNodeType, RelationEdgeType>>(
-    ({ nodes: selected }) => onSelectTables(selected.map((node) => node.id)),
-    [onSelectTables],
+    ({ nodes: selectedNodes, edges: selectedEdges }) =>
+      onSelect({
+        tableIds: selectedNodes.map((node) => node.id),
+        relationIds: selectedEdges.map((edge) => edge.id),
+      }),
+    [onSelect],
   )
 
   //키보드 처리 로직 - 캔버스 차원에서의 EventListener를 수행하도록 함
@@ -364,7 +391,7 @@ export function Canvas({
       <ReactFlow
         nodes={shownNodes}
         onNodesChange={onNodesChange}
-        edges={edges}
+        edges={shownEdges}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}

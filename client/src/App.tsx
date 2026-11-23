@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
 import { Canvas } from './canvas/Canvas'
+import type { CanvasSelection } from './canvas/Canvas'
 import { sameKind } from './canvas/relationMode'
 import type { RelationKind, RelationMode } from './canvas/relationMode'
 import { Toolbar } from './canvas/Toolbar'
@@ -9,7 +10,7 @@ import { RelationPanel } from './panel/RelationPanel'
 import { TablePanel } from './panel/TablePanel'
 import type { Connection } from './sync/connection'
 import { pickEditing, setEditing } from './sync/presence'
-import type { Editing } from './sync/presence'
+import type { TableEditing } from './sync/presence'
 
 // Toolbar와 Canvas가 공유할 문서 연결
 type AppProps = {
@@ -26,10 +27,10 @@ function App({ connection }: AppProps) {
   const [panel, setPanel] = useState<PanelTarget | null>(null)
   // 관계 모드 상태, null이면 관계 모드 아님 (내 화면에만 있는 값)
   const [relationMode, setRelationMode] = useState<RelationMode | null>(null)
-  // 캔버스에서 선택한 table id 목록 (내 화면에만 있는 값, 편집 중 표시에 사용)
-  const [selectedTableIds, setSelectedTableIds] = useState<string[]>([])
+  // 캔버스에서 선택한 table·관계선 id 목록 (내 화면에만 있는 값, 편집 중 표시에 사용)
+  const [selection, setSelection] = useState<CanvasSelection>({ tableIds: [], relationIds: [] })
   // 패널에서 포커스가 있는 column, 없으면 null (내 화면에만 있는 값)
-  const [focusedColumn, setFocusedColumn] = useState<Editing | null>(null)
+  const [focusedColumn, setFocusedColumn] = useState<TableEditing | null>(null)
 
   // 아래 함수들은 Canvas·패널의 구독 의존 값이므로 useCallback으로 같은 함수를 유지해 매 렌더링 재구독을 막음
   const closePanel = useCallback(() => setPanel(null), [])
@@ -49,10 +50,17 @@ function App({ connection }: AppProps) {
   }, [])
 
   // 패널·포커스·선택이 바뀌면 내 편집 대상을 다시 정해 awareness에 올림 (값이 같으면 setEditing이 보내지 않음)
-  const panelTableId = panel?.kind === 'table' ? panel.id : null
   useEffect(() => {
-    setEditing(awareness, pickEditing(panelTableId, focusedColumn, selectedTableIds))
-  }, [awareness, panelTableId, focusedColumn, selectedTableIds])
+    setEditing(
+      awareness,
+      pickEditing({
+        panel,
+        focusedColumn,
+        selectedTableIds: selection.tableIds,
+        selectedRelationIds: selection.relationIds,
+      }),
+    )
+  }, [awareness, panel, focusedColumn, selection])
 
   // 관계 버튼 클릭: 같은 버튼을 다시 누르면 관계 모드 해제, 다른 버튼이면 그 종류로 처음부터 다시 시작
   const toggleRelation = useCallback((kind: RelationKind) => {
@@ -102,7 +110,7 @@ function App({ connection }: AppProps) {
             onClosePanel={closePanel}
             relationMode={relationMode}
             onCancelRelation={cancelRelation}
-            onSelectTables={setSelectedTableIds}
+            onSelect={setSelection}
             peers={peers}
           />
           {/* key: 다른 대상을 열면 패널을 새로 만들어 처음부터 다시 읽음 */}

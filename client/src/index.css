@@ -300,7 +300,6 @@ button {
   outline: 2px solid var(--primary);
 }
 
-/* 다른 사용자가 편집 중인 table: 흰 틈 2px 바깥에 사용자 색 테두리, 선택 테두리(outline)와 겹치지 않음 */
 .table.editing {
   box-shadow:
     0 0 0 2px var(--surface),
@@ -308,7 +307,6 @@ button {
     0 1px 3px rgba(20, 30, 60, 0.12);
 }
 
-/* 이름표는 node 위쪽에 붙이고, 클릭은 아래 캔버스로 통과 */
 .t-editors {
   position: absolute;
   bottom: 100%;
@@ -330,6 +328,22 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.rel-editing {
+  fill: none;
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.rel-editors {
+  position: absolute;
+  display: flex;
+  gap: 4px;
+  pointer-events: none;
 }
 
 .react-flow__node.dragging .table {
