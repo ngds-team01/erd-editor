@@ -3,6 +3,8 @@ import { createBot } from './bot'
 import type { Bot } from './bot'
 import { firstDifference, groupByHash, waitForConvergence } from './converge'
 import type { HashGroup, NamedDoc } from './converge'
+import { startEventLoopMonitor } from './eventLoop'
+import type { EventLoopSummary } from './eventLoop'
 import { getColumns, getRelations, getTables } from './model'
 import type * as Y from 'yjs'
 import {
@@ -120,6 +122,8 @@ async function main(): Promise<boolean> {
     console.log(`봇 ${everyBot.length}개 동기화 완료, 편집 시작`)
 
     // 2. 정해진 시간 동안 편집 (지연 측정을 켰으면 측정용 변경도 함께 보냄)
+    // 측정 표본이 모이는 편집 구간 동안 봇 프로세스가 얼마나 바빴는지 함께 기록
+    const stopEventLoopMonitor = startEventLoopMonitor()
     probe?.start()
     bots.forEach((bot) => bot.start())
     const startedAt = Date.now()
@@ -133,7 +137,10 @@ async function main(): Promise<boolean> {
     // 3. 편집 멈춤 (진행 중인 드래그는 끝까지)
     probe?.stopSending()
     await Promise.all(bots.map((bot) => bot.stop()))
+    // 수렴 확인은 해시 계산으로 일부러 바쁜 구간이라 빼고, 편집 구간만 요약
+    const eventLoop = stopEventLoopMonitor()
     printSummary(bots)
+    printEventLoop(eventLoop)
 
     // 4. 봇끼리 수렴 확인: 아직 서버를 오가는 변경이 있으므로 같아질 때까지 기다림
     console.log(`수렴 확인 중 (최대 ${options.settleSec}초)`)
@@ -223,6 +230,14 @@ function createProbeBots(): ProbeBots {
     stopSending: () => senderStops.forEach((stop) => stop()),
     stopWatching: () => watcherStops.forEach((stop) => stop()),
   }
+}
+
+// 이벤트 루프 요약 출력: 바쁜 시간 비율과 타이머 지연
+function printEventLoop(summary: EventLoopSummary): void {
+  const ms = (value: number) => `${value.toFixed(1)}ms`
+  console.log(
+    `이벤트 루프 · 바쁜 시간 ${(summary.utilization * 100).toFixed(1)}% · 타이머 지연 p50 ${ms(summary.lagP50Ms)} · p99 ${ms(summary.lagP99Ms)} · 최대 ${ms(summary.lagMaxMs)}`,
+  )
 }
 
 // 경로별 지연 요약 출력: 표본 수, 미도착 수, p50·p95·p99·최대
