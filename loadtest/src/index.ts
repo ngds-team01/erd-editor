@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { createBot } from './bot'
 import type { Bot } from './bot'
@@ -16,11 +17,14 @@ import {
   watchUpdates,
 } from './probe'
 import type { ProbeLog } from './probe'
+import { saveRun } from './results'
 import { assertSingleYjs } from './singleYjs'
 import { summarize } from './stats'
 
 // 문서 ID 형식 (contracts 4.1), 틀리면 서버가 4400으로 닫으므로 미리 막음
 const DOC_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+// 결과 폴더 이름 형식 (--name)
+const RUN_NAME_PATTERN = /^[A-Za-z0-9_-]{1,40}$/
 
 // 실행 인자를 읽어 검사, 예: npm run bot -- --bots 20 --duration 60
 // 모르는 인자(--bot 오타 등)나 잘못된 값이면 오류
@@ -48,8 +52,15 @@ function readOptions() {
       'probe-interval': { type: 'string', default: '200' },
       // 받는 봇만 붙일 주소, 예: kubectl port-forward로 연 특정 파드 (지정하지 않으면 --url)
       'receiver-url': { type: 'string' },
+      // 결과 폴더 이름 뒤에 붙는 이름, 예: --name exp1-100bots → results/20261123-191502-exp1-100bots/
+      name: { type: 'string', default: 'run' },
     },
   })
+
+  // 폴더 이름에 쓰므로 Windows·Linux 모두에서 문제없는 글자만 허용
+  if (!RUN_NAME_PATTERN.test(values.name)) {
+    throw new Error(`--name 값은 영문, 숫자, _, - 로 1~40자여야 합니다: ${values.name}`)
+  }
 
   if (values['receiver-url'] !== undefined && !values.probe) {
     throw new Error('--receiver-url은 --probe와 함께 써야 합니다')
@@ -67,6 +78,7 @@ function readOptions() {
     probe: values.probe,
     probeIntervalMs: positiveNumber('probe-interval', values['probe-interval']),
     receiverUrl: values['receiver-url'] ?? values.url,
+    name: values.name,
   }
 }
 
@@ -92,6 +104,8 @@ async function main(): Promise<boolean> {
   }
   // 봇을 띄우기 전에 yjs가 한 벌인지 먼저 확인, 두 벌이면 편집이 깨지므로 바로 멈춤
   assertSingleYjs()
+  // settings.json·summary.csv에 남길 실행 시작 시각
+  const runStartedAt = new Date()
 
   console.log(
     `문서 ${options.docId} · 봇 ${options.bots}개 · ${options.durationSec}초 · 봇당 초당 ${options.rate}회 · seed ${options.seed}`,
@@ -170,6 +184,25 @@ async function main(): Promise<boolean> {
 
     const passed = result.converged && groups.length === 1
     printResult(passed, result.elapsedMs, groups)
+
+    // 6. 결과 저장: PASS든 FAIL이든 남김 (FAIL 원인을 나중에 볼 수 있게)
+    // 동기화 시간 초과처럼 중간에 오류가 나면 측정값이 없으므로 저장하지 않음
+    const dir = saveRun({
+      name: options.name,
+      argv: process.argv.slice(2),
+      options: { ...options },
+      startedAt: runStartedAt,
+      finishedAt: new Date(),
+      passed,
+      convergeMs: result.elapsedMs,
+      hashGroups: groups.length,
+      actions: totalActions(bots),
+      updatesSent: bots.reduce((sum, bot) => sum + bot.stats.updatesSent, 0),
+      disconnects: bots.reduce((sum, bot) => sum + bot.stats.disconnects, 0),
+      eventLoop,
+      logs: probe ? [probe.updateLog, probe.awarenessLog] : [],
+    })
+    console.log(`결과 저장 · ${path.relative(process.cwd(), dir)}`)
     return passed
   } finally {
     probe?.stopSending()
