@@ -105,7 +105,9 @@ export function summaryCsv(record: RunRecord): string {
   // 경로마다 같은 7칸, 기록이 없는 경로(측정을 끔)는 빈칸으로 채워 열 순서를 유지
   for (const probePath of PROBE_PATHS) {
     const log = record.logs.find((candidate) => candidate.path === probePath)
-    const summary = log ? summarize(log.samples().map((sample) => sample.latencyMs)) : null
+    // samples.csv에 쓴 값(소수점 셋째 자리로 반올림)으로 계산해, 스프레드시트로 다시 계산한 값과 소수점까지 같게 함
+    // (반올림 전 값으로 계산하면 셋째 자리에서 0.001 차이가 날 수 있음)
+    const summary = log ? summarize(log.samples().map((sample) => ms(sample.latencyMs))) : null
     columns.push(
       [`${probePath}_sent`, log ? log.sentCount() : null],
       [`${probePath}_received`, summary ? summary.count : null],

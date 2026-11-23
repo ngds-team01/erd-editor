@@ -6,8 +6,10 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
 import { createProbeLog } from './probe'
-import { saveRun, summaryCsv, timestampForDir, toCsv } from './results'
+import { createRandom } from './random'
+import { samplesCsv, saveRun, summaryCsv, timestampForDir, toCsv } from './results'
 import type { RunRecord } from './results'
+import { percentile } from './stats'
 
 function record(overrides: Partial<RunRecord> = {}): RunRecord {
   return {
@@ -65,6 +67,35 @@ describe('summaryCsv', () => {
     assert.equal(column(withoutProbe, 'update_sent'), '')
     assert.equal(column(withoutProbe, 'passed'), 'true')
     assert.equal(column(withoutProbe, 'seed'), '42')
+  })
+})
+
+describe('summaryCsv 백분위', () => {
+  it('samples.csv의 latency_ms로 다시 계산한 p50·p95·p99가 summary.csv와 소수점까지 같음', () => {
+    // 반올림 차이는 값에 따라 가끔만 생기므로, 실제 실행처럼 소수점 아래가 긴 지연을 여러 묶음 만들어 모두 확인
+    // (시드 난수라 매번 같은 값, 반올림 전 값으로 계산하던 코드는 이 중 일부에서 0.001 차이가 남)
+    for (let seed = 1; seed <= 20; seed += 1) {
+      const log = createProbeLog('update')
+      const random = createRandom(seed)
+      for (let seq = 1; seq <= 200; seq += 1) {
+        log.markSent(seq, 1000)
+        log.markReceived(seq, 1000 + random.next() * 100)
+      }
+      // 스프레드시트에서 하듯 samples.csv의 latency_ms 열만 가져와 다시 계산
+      const latencies = parseCsv(samplesCsv(log.samples()))
+        .slice(1)
+        .map((row) => Number(row[4]))
+        .sort((a, b) => a - b)
+      const rows = parseCsv(summaryCsv(record({ logs: [log] })))
+      for (const [p, name] of [
+        [0.5, 'p50'],
+        [0.95, 'p95'],
+        [0.99, 'p99'],
+      ] as const) {
+        const recomputed = Math.round(percentile(latencies, p) * 1000) / 1000
+        assert.equal(Number(rows[1][rows[0].indexOf(`update_${name}_ms`)]), recomputed, `seed ${seed} ${name}`)
+      }
+    }
   })
 })
 

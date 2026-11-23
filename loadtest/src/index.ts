@@ -46,7 +46,8 @@ function readOptions() {
       // 편집하는 시간(초)
       duration: { type: 'string', default: '30' },
       // 봇 1개의 초당 편집 수
-      rate: { type: 'string', default: '2' },
+      // 기본값은 제안서 실험 조건(초당 1회 편집)
+      rate: { type: 'string', default: '1' },
       // 난수 시드, 같은 값을 주면 같은 편집 순서를 다시 실행
       seed: { type: 'string', default: String(Date.now() % 1_000_000) },
       // 봇 접속 사이 간격(ms), HAProxy가 봇을 파드에 나눠 배정할 시간을 줌
