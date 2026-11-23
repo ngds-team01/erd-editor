@@ -2,6 +2,7 @@
 // 실행: npm test
 import assert from 'node:assert/strict'
 import { afterEach, beforeEach, describe, it, mock } from 'node:test'
+import { applyAwarenessUpdate, Awareness, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { randomEdit } from './actions'
 import { getTables } from './model'
@@ -9,8 +10,11 @@ import {
   createProbeLog,
   ensureProbeTable,
   isProbeTable,
+  readAwarenessSeq,
   readProbeSeq,
+  startAwarenessSender,
   startUpdateSender,
+  watchAwareness,
   watchUpdates,
 } from './probe'
 import { createRandom } from './random'
@@ -80,6 +84,51 @@ describe('update 경로 측정', () => {
     const first = ensureProbeTable(doc)
     assert.equal(ensureProbeTable(doc), first)
     assert.equal([...getTables(doc).values()].filter(isProbeTable).length, 1)
+  })
+})
+
+describe('awareness 경로 측정', () => {
+  beforeEach(() => mock.timers.enable({ apis: ['setInterval'] }))
+  afterEach(() => mock.timers.reset())
+
+  it('보내는 쪽 상태의 probe.seq를 받는 쪽에서 읽어 지연을 기록, user 필드는 그대로', () => {
+    const sender = new Awareness(new Y.Doc())
+    const receiver = new Awareness(new Y.Doc())
+    sender.setLocalState({ user: { id: 'u1', name: '봇', color: '#0d74ce' }, editing: null, cursor: null })
+    // 보내는 쪽 상태가 바뀔 때마다 받는 쪽에 바로 전달 = 지연 없는 서버
+    sender.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
+      applyAwarenessUpdate(receiver, encodeAwarenessUpdate(sender, [...added, ...updated, ...removed]), 'server')
+    })
+    const log = createProbeLog('awareness')
+    let clock = 0
+    const stopWatching = watchAwareness(receiver, sender.clientID, log, () => clock + 3)
+    const stopSending = startAwarenessSender(sender, log, 200, () => (clock += 1000))
+
+    mock.timers.tick(200 * 3)
+    stopSending()
+    stopWatching()
+
+    assert.deepEqual(
+      log.samples().map((sample) => [sample.seq, sample.latencyMs]),
+      [
+        [1, 3],
+        [2, 3],
+        [3, 3],
+      ],
+    )
+    assert.equal(log.missingCount(), 0)
+    // probe 필드만 더하고 사용자 정보는 지우지 않음
+    assert.equal(receiver.getStates().get(sender.clientID)?.user?.name, '봇')
+    sender.destroy()
+    receiver.destroy()
+  })
+
+  it('형식이 틀린 probe 필드는 무시', () => {
+    assert.equal(readAwarenessSeq({ probe: { seq: 7 } }), 7)
+    assert.equal(readAwarenessSeq({ probe: { seq: '7' } }), null)
+    assert.equal(readAwarenessSeq({ probe: null }), null)
+    assert.equal(readAwarenessSeq({ user: {} }), null)
+    assert.equal(readAwarenessSeq(null), null)
   })
 })
 

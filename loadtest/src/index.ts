@@ -5,7 +5,14 @@ import { firstDifference, groupByHash, waitForConvergence } from './converge'
 import type { HashGroup, NamedDoc } from './converge'
 import { getColumns, getRelations, getTables } from './model'
 import type * as Y from 'yjs'
-import { createProbeLog, ensureProbeTable, startUpdateSender, watchUpdates } from './probe'
+import {
+  createProbeLog,
+  ensureProbeTable,
+  startAwarenessSender,
+  startUpdateSender,
+  watchAwareness,
+  watchUpdates,
+} from './probe'
 import type { ProbeLog } from './probe'
 import { assertSingleYjs } from './singleYjs'
 import { summarize } from './stats'
@@ -140,6 +147,7 @@ async function main(): Promise<boolean> {
     if (probe) {
       probe.stopWatching()
       printLatency(probe.updateLog)
+      printLatency(probe.awarenessLog)
     }
 
     // 5. 관찰자 확인: 봇끼리만 같고 서버는 다를 수 있으므로, 새로 접속한 클라이언트가 받는 상태도 비교
@@ -171,7 +179,8 @@ type ProbeBots = {
   // --receiver-url로 붙어 받은 시각을 기록하는 봇, 다른 파드에 붙이면 Redis를 거치는 SHARED 경로를 잼
   receiver: Bot
   updateLog: ProbeLog
-  // 측정용 테이블을 준비하고 보내기·받기를 시작
+  awarenessLog: ProbeLog
+  // 측정용 테이블을 준비하고 두 경로(update·awareness)의 보내기·받기를 시작
   start: () => void
   stopSending: () => void
   stopWatching: () => void
@@ -182,26 +191,37 @@ function createProbeBots(): ProbeBots {
   const common = { docId: options.docId, seed: options.seed, rate: options.rate }
   const sender = createBot({ ...common, url: options.url, index: options.bots })
   const receiver = createBot({ ...common, url: options.receiverUrl, index: options.bots + 1 })
+  // 경로마다 기록장을 따로 둠, 순번도 경로마다 1부터 셈
   const updateLog = createProbeLog('update')
+  const awarenessLog = createProbeLog('awareness')
   console.log(
     `지연 측정 · ${options.probeIntervalMs}ms마다 · 보내는 봇(봇 ${sender.index}) ${options.url} → 받는 봇(봇 ${receiver.index}) ${options.receiverUrl}`,
   )
-  // 아직 시작하지 않았거나 이미 멈췄으면 아무것도 하지 않는 함수
-  let stopSending = () => {}
-  let stopWatching = () => {}
+  // 멈추는 함수 모음, 시작 전이면 비어 있어 멈춰도 아무 일도 없음
+  let senderStops: (() => void)[] = []
+  let watcherStops: (() => void)[] = []
 
   return {
     sender,
     receiver,
     updateLog,
+    awarenessLog,
     start: () => {
       // 보내는 봇 문서에 측정용 테이블을 만듦, 받는 봇에는 이 생성이 먼저 도착한 뒤 이름 변경이 도착함
       const tableId = ensureProbeTable(sender.doc)
-      stopWatching = watchUpdates(receiver.doc, tableId, updateLog)
-      stopSending = startUpdateSender(sender.doc, tableId, updateLog, options.probeIntervalMs)
+      // 받는 쪽을 먼저 붙여 첫 순번부터 기록
+      watcherStops = [
+        watchUpdates(receiver.doc, tableId, updateLog),
+        // awareness의 clientID = 그 봇 Y.Doc의 clientID, 받는 봇은 이 번호로 보내는 봇의 상태를 찾음
+        watchAwareness(receiver.awareness, sender.awareness.clientID, awarenessLog),
+      ]
+      senderStops = [
+        startUpdateSender(sender.doc, tableId, updateLog, options.probeIntervalMs),
+        startAwarenessSender(sender.awareness, awarenessLog, options.probeIntervalMs),
+      ]
     },
-    stopSending: () => stopSending(),
-    stopWatching: () => stopWatching(),
+    stopSending: () => senderStops.forEach((stop) => stop()),
+    stopWatching: () => watcherStops.forEach((stop) => stop()),
   }
 }
 

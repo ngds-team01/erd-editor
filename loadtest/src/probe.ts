@@ -2,6 +2,9 @@
 // 보내는 봇이 측정용 테이블 이름을 probe-{seq}로 바꾸고, 다른 파드에 붙은 받는 봇이 그 순번을 받은 시각을 기록
 // 보낸 시각은 문서에 싣지 않고 이 프로세스의 메모리에만 적어 둠 → 문서에는 평범한 이름 변경만 남아 docHash·수렴 판정 규칙이 그대로
 // 보내는 봇과 받는 봇이 같은 프로세스에 있어 같은 시계로 재므로 컴퓨터 간 시계 차이가 없음
+// awareness는 같은 방식으로 상태에 probe: { seq }만 올림 (보낸 시각은 역시 메모리에만)
+// y-protocols는 y-websocket이 함께 설치하는 패키지, 여기서는 타입만 가져와 실행 코드에는 남지 않음
+import type { Awareness } from 'y-protocols/awareness'
 import type * as Y from 'yjs'
 import { createTable, getTables, updateTable } from './model'
 import type { TableMap } from './model'
@@ -11,7 +14,7 @@ export const PROBE_PHYSICAL_NAME = 'loadtest_probe'
 // 측정용 테이블 논리명 형식, 숫자 부분이 순번
 const PROBE_NAME_PATTERN = /^probe-(\d+)$/
 
-// 측정 경로: update = 문서 변경, awareness = 편집 중 표시 (3-b에서 추가)
+// 측정 경로: update = 문서 변경, awareness = 편집 중 표시
 export type ProbePath = 'update' | 'awareness'
 
 // 측정값 1개, 시각은 epoch ms (소수점 아래까지)
@@ -121,4 +124,63 @@ export function watchUpdates(
   }
   doc.on('update', onUpdate)
   return () => doc.off('update', onUpdate)
+}
+
+// awareness 상태의 probe 필드에서 순번을 읽음, 없거나 형식이 다르면 null
+// 받은 상태는 다른 클라이언트가 올린 값이라 presence.ts처럼 형식을 검사한 뒤 사용
+export function readAwarenessSeq(state: unknown): number | null {
+  if (typeof state !== 'object' || state === null) {
+    return null
+  }
+  const probe = (state as { probe?: unknown }).probe
+  if (typeof probe !== 'object' || probe === null) {
+    return null
+  }
+  const seq = (probe as { seq?: unknown }).seq
+  return typeof seq === 'number' && Number.isInteger(seq) ? seq : null
+}
+
+// 보내는 쪽(awareness): intervalMs마다 내 상태의 probe 필드를 { seq }로 바꾸고 보낸 시각을 기록
+// user·editing 필드는 그대로 두고 probe만 더하므로 client 화면은 이 필드를 무시함 (collectPeers는 user·editing만 읽음)
+// 반환값: 멈추는 함수
+export function startAwarenessSender(
+  awareness: Awareness,
+  log: ProbeLog,
+  intervalMs: number,
+  now: () => number = probeNow,
+): () => void {
+  let seq = 0
+  const timer = setInterval(() => {
+    seq += 1
+    // 문서와 마찬가지로 setLocalStateField 안에서 provider가 바로 서버로 보내므로, 보낸 시각을 먼저 적음
+    log.markSent(seq, now())
+    awareness.setLocalStateField('probe', { seq })
+  }, intervalMs)
+  return () => clearInterval(timer)
+}
+
+// awareness 'change' 이벤트가 넘겨주는 값: 상태가 새로 생긴·바뀐·사라진 clientId 목록
+type AwarenessChanges = { added: number[]; updated: number[]; removed: number[] }
+
+// 받는 쪽(awareness): 보내는 봇(senderClientId)의 상태가 바뀔 때마다 probe.seq를 읽어 받은 시각을 기록
+// 'change'는 내용이 실제로 바뀔 때만 발생 (15초마다 같은 상태를 다시 보내는 'update'는 제외)
+// 반환값: 감시를 멈추는 함수
+export function watchAwareness(
+  awareness: Awareness,
+  senderClientId: number,
+  log: ProbeLog,
+  now: () => number = probeNow,
+): () => void {
+  const onChange = ({ added, updated }: AwarenessChanges) => {
+    // 재접속하면 보내는 봇이 added로 다시 들어오므로 둘 다 봄, 같은 순번은 markReceived가 무시
+    if (!added.includes(senderClientId) && !updated.includes(senderClientId)) {
+      return
+    }
+    const seq = readAwarenessSeq(awareness.getStates().get(senderClientId))
+    if (seq !== null) {
+      log.markReceived(seq, now())
+    }
+  }
+  awareness.on('change', onChange)
+  return () => awareness.off('change', onChange)
 }

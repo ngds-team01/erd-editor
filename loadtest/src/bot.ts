@@ -37,6 +37,8 @@ export type BotStats = {
 export type Bot = {
   index: number
   doc: Y.Doc
+  // provider가 만든 awareness, 지연 측정(probe.ts)이 편집 중 표시 경로를 잴 때 사용
+  awareness: WebsocketProvider['awareness']
   stats: BotStats
   // 서버와 첫 동기화가 끝날 때까지 대기, timeoutMs 안에 안 끝나면 오류
   waitSynced: (timeoutMs: number) => Promise<void>
@@ -116,6 +118,7 @@ export function createBot(options: BotOptions): Bot {
   return {
     index,
     doc,
+    awareness: provider.awareness,
     stats,
     //Bot 동기화 대기
     waitSynced: (timeoutMs) =>
