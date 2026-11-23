@@ -126,9 +126,6 @@ const memos = doc.getMap<Y.Map<any>>('memos')  // { id, text: string, position: 
 - **ID 생성**: `crypto.randomUUID()`. 클라이언트가 만든다. 서버는 ID를 만들지 않는다.
 - **한 동작 = 한 트랜잭션**: 여러 키를 바꾸는 동작은 `doc.transact(() => { ... })` 안에서 한다 (예: 테이블 생성 시 logicalName·physicalName·position·columns를 한 번에).
 - **테이블 삭제**: 같은 트랜잭션에서 그 테이블을 `fromTable`/`toTable`로 가진 관계도 함께 삭제한다.
-- **컬럼 삭제**: 같은 트랜잭션에서 그 컬럼을 FK로 쓰는 관계(`toTable`이 그 테이블이고 `toColumn`이 그 컬럼인 관계)도 함께 삭제한다.
-  - FK 컬럼이 없어진 관계를 남겨 두면 어느 컬럼을 참조하는지 알 수 없는 관계가 된다. `toColumn`이 없는 테이블 단위 관계는 컬럼을 지워도 그대로 둔다.
-  - 동시 편집으로 삭제된 컬럼을 가리키는 관계가 남는 경우는 아래 "고아 관계 처리"를 따른다.
 - **고아 관계 처리**: 동시 편집으로 존재하지 않는 테이블·컬럼을 가리키는 관계가 남을 수 있다. 클라이언트는 이런 관계를 **그리지 않는다**(데이터는 지우지 않음). 수렴 검증에는 영향 없음.
 - **삭제된 테이블에 동시에 추가된 컬럼**은 테이블과 함께 사라진다(표 2의 "삭제로 수렴"). 의도된 동작이다.
 - **드래그**: 드래그 중에는 `position`을 최대 50ms에 한 번만 쓰고, 드래그가 끝날 때 마지막 값을 한 번 더 쓴다.
@@ -154,12 +151,15 @@ Y.Doc 스키마 타입, 생성·이동·삭제 헬퍼, `canonicalJSON`은 `clien
 ```tsx
 awareness.setLocalState({
   user:    { id: string, name: string, color: string },  // color = '#rrggbb'
-  editing: { tableId: string, columnId: string | null } | null,  // 편집 중인 엔티티
+  editing: { tableId: string, columnId: string | null }  // 테이블(컬럼) 편집 중
+         | { relationId: string }                         // 관계 편집 중
+         | null,
   cursor:  { x: number, y: number } | null,  // 캔버스 좌표(화면 좌표 아님), Should 항목
 })
 ```
 
 - 서버는 awareness 내용을 해석하지 않고 그대로 중계만 한다. 다른 파드에 붙은 사용자에게는 `AWARENESS` 메시지(5.2)로 전달한다.
+- `editing`은 `tableId`와 `relationId` 중 하나만 가진다. 둘 다 있거나 형식이 맞지 않으면 받는 쪽은 편집 중이 아닌 것으로 본다.
 - `cursor`는 최대 50ms에 한 번만 갱신한다.
 
 ---
@@ -196,6 +196,8 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 | 1012 | 서버 재시작/종료 중 (graceful shutdown) | 0~500ms 무작위 지연 후 **즉시** 재접속 |
 | 4400 | 잘못된 docId | 재접속하지 않고 오류 표시 |
 | 그 외 / 비정상 끊김 | 장애 | 지수 백오프 0.5s → 1s → 2s … 최대 10s, ±20% 지터 |
+| (없음) 30초 무응답 | 클라이언트가 직접 끊음 (절전, 네트워크 전환 등으로 연결이 조용히 죽은 경우) | y-websocket 기본 재접속: 0.2s → 0.4s … 최대 2.5s, 지터 없음 |
+- 정상 연결에서는 awareness가 15초마다 갱신되고 서버가 보낸 사람에게도 되돌려 주므로, 30초 무응답은 연결이 실제로 끊겼을 때만 생긴다.
 - 재접속 후 SyncStep1·2로 끊긴 동안의 편집을 자동 병합한다(Yjs 기본 동작). 클라이언트는 별도 재전송 큐를 두지 않는다.
 
 ---
@@ -222,9 +224,7 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 
 1. 파드에 문서의 첫 클라이언트가 붙으면: 문서를 복원(6.4)하고 채널을 **구독**한 뒤 `JOIN`을 발행한다. 피어가 없으면 **LOCAL**. → 제안서는 처음 연 파드는 발행하지 않는다고 명시했지만, 넘친 파드가 먼저 열었는지 확인하기 위해 1회 `JOIN` 만 예외로 설정.
 2. `JOIN`을 받은 파드: 보낸 파드를 피어 목록에 넣고 **SHARED**로 바꾼 뒤, 그 파드에게 `HEARTBEAT`(to=보낸 파드)와 `SYNC1`을 보낸다. JOIN을 보낸 파드도 피어에게서 HEARTBEAT·SYNC1 등 어떤 메시지든 받으면, 보낸 파드를 피어 목록에 넣고 SHARED로 바꾼다.
-3. `SYNC1`을 받으면 `SYNC2`(to=보낸 파드)로 상대에게 없는 부분을 돌려준다. **아직 `SYNC1`을 보내지 않은 피어면** 자기 `SYNC1`(to=보낸 파드)도 보내서 양방향으로 맞춘다.
-   - "처음 보는 피어"로 판단하면 안 된다. `JOIN`을 보낸 파드는 상대의 `HEARTBEAT`를 `SYNC1`보다 먼저 받아 규칙 2에 따라 이미 피어로 등록하므로, `SYNC1`을 받을 때는 "처음 보는 피어"가 아니다. 그러면 자기 `SYNC1`을 보내지 않아 새로 연 파드에만 있는 내용이 상대에게 가지 않는다.
-   - 그래서 피어마다 `SYNC1`을 보냈는지 기록해 두고, 보내지 않은 피어에게만 한 번 보낸다.
+3. `SYNC1`을 받으면 `SYNC2`(to=보낸 파드)로 상대에게 없는 부분을 돌려준다. 처음 보는 피어면 자기 `SYNC1`(to=보낸 파드)도 보내서 양방향으로 맞춘다.
 4. **SHARED인 동안에만** 로컬 클라이언트의 업데이트를 `UPDATE`로 발행한다. LOCAL이면 발행하지 않는다. SHARED인 동안에만 로컬 클라이언트의 awareness 변경을 AWARENESS로 발행한다. 받은 파드는 자기 클라이언트들에게 그대로 전달한다.
 5. SHARED 파드는 `HEARTBEAT`를 **5초**마다 보낸다. 피어에게서 **15초** 동안 아무 메시지도 없으면 피어 목록에서 뺀다.
 6. 파드의 그 문서 마지막 클라이언트가 떠나면: Streams flush(6.2) → `LEAVE` 발행 → 구독 해제 → 메모리에서 문서 제거.
@@ -261,11 +261,6 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 - 스냅샷 워커는 30초마다 `SCAN`으로 `doc:*:log`를 찾아, 새 항목이 있는 문서만 스냅샷을 만든다.
 - 스냅샷 업로드에 **성공한 뒤에만**, 직전 스냅샷의 `lastStreamId` 기준으로 `XTRIM doc:{docId}:log MINID <직전 lastStreamId>` 한다. 한 세대 늦게 잘라서, 옛 스냅샷으로 복원 중인 파드도 필요한 로그를 읽을 수 있게 한다.
 - 워커는 문서별로 직전 `lastStreamId`를 기억해 둔다.
-- **스냅샷 워커는 1개만 돌린다** (Deployment `replicas: 1`, `strategy: Recreate`).
-  - 워커 2개가 같은 문서를 처리하면 편집이 사라질 수 있다. 느린 워커가 스냅샷을 읽고 업로드하기 전에 멈춘 사이 다른 워커가 2세대 이상 진행하며 `XTRIM`하면, 느린 워커가 옛 스냅샷 기준으로 덮어쓴 뒤에는 그사이 잘린 로그 구간이 스냅샷에도 Streams에도 남지 않는다.
-  - `Recreate`는 배포할 때 옛 워커를 먼저 내리고 새 워커를 올려서, 두 워커가 겹치지 않게 한다 (기본값 `RollingUpdate`는 잠깐 겹친다).
-- 그래도 겹칠 때를 대비해 **업로드는 조건부로 한다.** 읽은 스냅샷의 ETag가 그대로일 때만(`If-Match: <ETag>`), 스냅샷이 없었으면 지금도 없을 때만(`If-None-Match: *`) 올린다.
-  - 조건이 안 맞으면(412: 다른 워커가 먼저 올림, 409: 같은 키에 조건부 업로드가 동시에 들어옴) 업로드도 `XTRIM`도 하지 않고, 다음 주기에 새 스냅샷을 읽어 다시 한다. `worker_snapshots_total{result="conflict"}`로 센다 (7.3).
 
 ### 6.4 복원 순서
 
@@ -275,15 +270,6 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 4. 클라이언트와 SyncStep1·2로 빠진 부분 교환
 
 **복원이 끝나기 전에는 클라이언트의 SyncStep1에 응답하지 않는다** (빈 문서를 내려보내지 않도록).
-
-2단계에서 스냅샷을 **읽지 못하면**(MinIO 장애 등. 스냅샷이 아직 없는 것은 실패가 아니라 빈 문서로 시작한다):
-
-- Streams가 한 번도 잘리지 않았으면 처음부터 전부 남아 있으므로, `XRANGE doc:{docId}:log - +`로 Streams만으로 복원한다.
-  - 확인한 뒤 읽기 전에 워커가 자를 수도 있으므로, 문서가 열려 있는 동안 5초마다 스냅샷을 다시 읽어 합친다.
-- 잘린 적이 있거나 확인하지 못하면(Redis 끊김 등), **복원하지 않고 클라이언트에게 답하지 않은 채 2초마다 스냅샷을 다시 읽는다.** 읽은 뒤 3단계부터 진행한다.
-  - 잘린 앞부분(예: 테이블 생성)에 의존하는 뒤 기록(예: 그 테이블에 컬럼 추가)은 Yjs가 대기 상태로만 들고 있어 화면에는 빈 문서로 보인다. 이때 사용자가 같은 테이블을 다시 만들면 스냅샷이 돌아온 뒤 두 벌이 된다.
-- 잘렸는지는 `XINFO STREAM doc:{docId}:log`의 `entries-added`(지금까지 추가된 항목 수)와 `length`(남은 항목 수)로 판단한다. `entries-added > length`면 잘린 적이 있다.
-  - `max-deleted-entry-id`는 쓰지 않는다. `XDEL`만 반영하고 `XTRIM`은 반영하지 않아서, 워커가 잘라도 `0-0`으로 남는다 (Redis 7.4·8에서 확인).
 
 ---
 
@@ -313,22 +299,12 @@ y-websocket 프로토콜을 **그대로** 쓴다. 서버 전용 메시지 타입
 | `editor_ws_connections` | gauge | — |  HPA 기준 |
 | `editor_messages_total` | counter | `type`: `sync`, `awareness`, `pubsub_in`, `pubsub_out`, `xadd` | 라벨 값 |
 | `editor_sync_latency_seconds` | histogram | — |  Pub/Sub 수신 시 `now - sentAt`. buckets: 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2 |
-| `editor_doc_restore_seconds` | histogram | — | 6.4의 2~3단계 소요 시간 (스냅샷을 기다린 시간 포함) |
+| `editor_doc_restore_seconds` | histogram | — | 6.4의 2~3단계 소요 시간 |
 | `editor_docs` | gauge | `mode`: `local`, `shared` | SHARED 문서 비율 대시보드용 |
 
 - Redis 작업량은 전체 파드의 `pubsub_out + pubsub_in + xadd` 합으로 계산하며, 실제 부하는 `redis_exporter`로 수집한다.
     
     → `redis_exporter`는 Redis가 받은 명령만 세므로 구독 파드로의 배달 횟수가 빠진다. 따라서 작업량은 서버 지표를 기반으로, `redis_exporter`는 CPU, 네트워크 부하 수집용으로 활용한다.
-
-스냅샷 워커 (`:8081/metrics`)
-
-| 이름 | 종류 | 라벨 | 상태 |
-| --- | --- | --- | --- |
-| `worker_snapshots_total` | counter | `result`: `saved`, `conflict`, `failed` | 문서별 처리 결과. `conflict`는 6.3 조건부 업로드에서 막힌 수, `failed`는 그 문서 처리 중 오류(S3·Redis 등) |
-| `worker_snapshot_entries_total` | counter | — | 스냅샷에 반영한 Streams 항목 수 |
-| `worker_stream_trimmed_total` | counter | — | `XTRIM`으로 지운 Streams 항목 수 |
-| `worker_cycle_seconds` | histogram | — | 한 주기(모든 문서 처리) 소요 시간. buckets: 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30 |
-| `worker_last_cycle_timestamp_seconds` | gauge | — | 마지막 주기가 끝난 시각(Unix 초). 워커가 멈췄는지 확인용. Redis가 끊겨 주기를 건너뛰면 갱신되지 않는다 |
 
 ### 7.4 라우팅 (HAProxy)
 
@@ -369,25 +345,14 @@ backend editors
 | `VITE_WS_URL` | `ws://localhost:8088/ws` | client |
 | `AWS_REGION` | `us-east-1` | server, worker |
 
-AWS SDK v3로 MinIO에 붙으려면 region 값, path-style 설정, 접속 키가 필요하다. `S3Client`는 아래처럼 만든다.
+AWS SDK v3로 MinIO에 붙으려면 region 값과 path-style 설정이 필요하다. `S3Client`는 아래처럼 만든다.
 
 ```tsx
-new S3Client({
-  endpoint: S3_ENDPOINT || undefined,
-  region: AWS_REGION,
-  forcePathStyle: true,
-  credentials:
-    S3_ACCESS_KEY && S3_SECRET_KEY
-      ? { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY }
-      : undefined,
-})
+new S3Client({ endpoint: S3_ENDPOINT || undefined, region: AWS_REGION, forcePathStyle: true })
 ```
 
 - MinIO는 path-style 주소(`http://minio:9000/버킷/키`)만 지원하므로 `forcePathStyle`이 필요하다.
-- **접속 키는 Secret `s3-credentials`의 `S3_ACCESS_KEY`·`S3_SECRET_KEY`로 주입되고, 코드가 이 값을 읽어 `credentials`로 넘긴다.**
-  - SDK는 환경 변수에서 자기 기본 이름(`AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`)만 자동으로 읽는다. `S3_ACCESS_KEY` 같은 이름은 읽지 않으므로 `credentials`를 빼면 접속 키를 찾지 못해 MinIO 요청이 실패한다.
-  - `AWS_*` 이름으로 바꾸지 않고 `S3_*`를 그대로 쓴다. 같은 Secret을 MinIO 루트 계정(`MINIO_ROOT_USER`·`MINIO_ROOT_PASSWORD`)과 버킷 생성 Job도 이 이름으로 읽고 있어서(`deploy/k8s/minio.yaml`), 이름을 바꾸면 Secret, MinIO, 버킷 생성 Job, 서버·워커 코드를 모두 함께 고쳐야 한다.
-  - 두 값이 모두 없으면 `credentials`를 `undefined`로 두어 SDK 기본 방식(`AWS_*` 환경 변수, IAM 역할 등)으로 찾게 한다. AWS S3로 확장할 때 키 없이 IAM 역할로 붙는 경우를 위한 것이다.
+- 접속 키는 SDK 기본 이름(`AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`)으로 넣는다. SDK는 `S3_ACCESS_KEY` 같은 이름을 읽지 않는다.
 - AWS S3로 확장할 때는 `S3_ENDPOINT`만 비우면 된다 (빈 문자열 대신 `undefined`가 넘어가도록 `|| undefined`).
 
 ---
@@ -405,4 +370,4 @@ new S3Client({
 | v0.1.2 | 2026-11-09 |	인프라 확정,  7.3 수정댓글 |	박지호 |
 | v0.1.3 | 2026-11-10 | 해시 대상 명시, S3 키 이름, HAProxy 체크 주기 | 이지민 |
 | v0.1.4 | 2026-11-16 | 7.3 동기화 지연 버킷에 10ms 미만(1·2.5·5ms) 추가 | 이지민 |
-| v0.1.5 | 2026-11-21 | 2주차 반영: 2.7 컬럼 삭제 시 FK 관계 삭제, 5.3-3 SYNC1 조건, 6.3 워커 1개·조건부 업로드, 6.4 스냅샷을 못 읽을 때 복원, 7.3 워커 지표, 7.5 S3 접속 키 전달 방법 | 이지민 |
+| v0.1.5 | 2026-11-23 | 3 관계 편집 추가, 4.3 30초 무응답 끊김 시 재접속 동작 | 김령준 |
