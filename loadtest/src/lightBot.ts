@@ -126,16 +126,17 @@ export function createLightBot(options: LightBotOptions): LightBot {
   }
 
   // 받은 메시지: 서버의 SyncStep1에만 답하고 나머지(다른 사람의 편집·awareness)는 버림
+  // 사람이 많으면 초당 수천 개를 받으므로, 버릴 메시지는 앞 2바이트만 보고 바로 버림
+  // (종류 번호 0·1과 SyncStep 번호 0·1·2는 모두 128보다 작아 varuint로 1바이트씩임)
   function handle(data: Uint8Array): void {
     stats.messagesReceived += 1
     stats.bytesReceived += data.byteLength
+    if (data[0] !== MESSAGE_SYNC || data[1] !== syncProtocol.messageYjsSyncStep1) {
+      return
+    }
     const decoder = decoding.createDecoder(data)
-    if (decoding.readVarUint(decoder) !== MESSAGE_SYNC) {
-      return
-    }
-    if (decoding.readVarUint(decoder) !== syncProtocol.messageYjsSyncStep1) {
-      return
-    }
+    decoding.readVarUint(decoder)
+    decoding.readVarUint(decoder)
     // 서버 상태 벡터를 보고 서버에 없는 내 편집만 SyncStep2로 보냄 (끊긴 동안 한 편집이 여기서 올라감)
     const serverStateVector = decoding.readVarUint8Array(decoder)
     send(message(MESSAGE_SYNC, (encoder) => syncProtocol.writeSyncStep2(encoder, doc, serverStateVector)))
@@ -149,7 +150,8 @@ export function createLightBot(options: LightBotOptions): LightBot {
       return
     }
     const ws = new WebSocket(`${url}/${docId}`)
-    ws.binaryType = 'arraybuffer'
+    // 기본값(nodebuffer) 그대로 받음: Node Buffer는 Uint8Array라 복사 없이 바로 읽을 수 있음
+    // ('arraybuffer'로 바꾸면 메시지마다 ArrayBuffer로 한 번 더 복사함)
     socket = ws
     ws.on('open', () => {
       // 접속하자마자 내 사용자 정보를 올림 (y-websocket과 같음)
@@ -159,7 +161,7 @@ export function createLightBot(options: LightBotOptions): LightBot {
         ),
       )
     })
-    ws.on('message', (data: ArrayBuffer) => handle(new Uint8Array(data)))
+    ws.on('message', (data: Buffer) => handle(data))
     // 접속 실패도 'error' 뒤에 'close'(1006)가 오므로 여기서는 아무것도 하지 않음 (리스너가 없으면 Node가 프로세스를 멈춤)
     ws.on('error', () => {})
     ws.on('close', (code: number, reason: Buffer) => {
