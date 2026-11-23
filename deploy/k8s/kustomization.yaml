@@ -9,6 +9,7 @@ resources:
   - haproxy.yaml
   - ../../monitoring
   - client.yaml
+  - worker.yaml
 configMapGenerator:
   - name: haproxy-config
     files:

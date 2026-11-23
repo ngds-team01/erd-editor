@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: snapshot-worker
+  labels:
+    app: snapshot-worker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: snapshot-worker
+  template:
+    metadata:
+      labels:
+        app: snapshot-worker
+    spec:
+      containers:
+        - name: snapshot-worker
+          image: crdt-worker:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - name: REDIS_URL
+              value: redis://redis-0.redis:6379
+            - name: S3_ENDPOINT
+              value: http://minio:9000
+            - name: S3_BUCKET
+              value: erd-snapshots
+            - name: AWS_REGION
+              value: us-east-1
+          envFrom:
+            - secretRef:
+                name: s3-credentials
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
