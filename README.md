@@ -42,12 +42,12 @@ sudo install kubectl /usr/local/bin/kubectl && rm kubectl
   [wsl2]
   kernelCommandLine = cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1
   ```
-- 접속: `localhost:8088`
+- 접속: 브라우저에서 `localhost:8088`
 
 **VM (Ubuntu 22.04 이상)**
 - CPU 4코어, 메모리 8GB 이상, 네트워크 브리지 모드
 - Docker 설치: `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER` 후 재로그인
-- 접속: `<VM IP>:8088`
+- 접속: PC 브라우저에서 `<VM IP>:8088`
 - 대시보드: `make grafana` 대신 아래 명령 실행 → PC 브라우저에서 `<VM IP>:3000/d/erd-editor`
   ```
   kubectl --context kind-erd port-forward --address 0.0.0.0 svc/grafana 3000:3000
@@ -58,7 +58,8 @@ sudo install kubectl /usr/local/bin/kubectl && rm kubectl
 git clone https://github.com/ngds-team01/erd-editor.git && cd erd-editor
 make up      # 클러스터 생성 (노드 4개, Kubernetes v1.37.0)
 make server  # 서버 이미지 빌드 → 클러스터에 넣기 (서버 코드 고치면 다시)
-make deploy  # Redis, MinIO, 편집 서버, HAProxy, Prometheus, Grafana 배포
+make client  # 클라이언트 이미지 빌드 → 클러스터에 넣기 (클라이언트 코드 고치면 다시)
+make deploy  # Redis, MinIO, 편집 서버, 클라이언트, HAProxy, Prometheus, Grafana 배포
 make status  # 상태 확인 (파드가 모두 Running·Completed면 완료)
 curl -i localhost:8088/readyz   # 첫 줄이 200 OK면 접속 성공
 make grafana # 대시보드 → http://localhost:3000/d/erd-editor (Ctrl+C로 종료)
