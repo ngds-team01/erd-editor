@@ -16,6 +16,7 @@ import {
 } from './model'
 import type { ColumnPatch, Position } from './model'
 import type { Editing } from './presence'
+import { isProbeTable } from './probe'
 import type { Random } from './random'
 
 // 봇이 하는 편집 종류
@@ -69,8 +70,9 @@ const MAX_DRAG_DISTANCE = 300
 
 // 지금 문서 상태에서 할 수 있는 편집만 골라 비중대로 하나를 뽑음
 // 예: 테이블이 없으면 createTable만, 한도에 닿은 생성은 제외
+// 측정용 테이블은 개수에서도 빼서, 측정용 테이블만 남았을 때 새 테이블부터 만들게 함
 export function pickAction(doc: Y.Doc, random: Random, limits: EditLimits = DEFAULT_LIMITS): ActionName {
-  const tableCount = getTables(doc).size
+  const tableCount = editableTableIds(doc).length
   if (tableCount === 0) {
     return 'createTable'
   }
@@ -254,8 +256,21 @@ function noWait(): Promise<void> {
   return Promise.resolve()
 }
 
+// 무작위 편집 대상이 될 수 있는 테이블 id: 측정용 테이블(probe.ts)은 빼서 이름 변경·삭제·드래그·관계 대상이 되지 않게 함
+// 측정용 테이블이 없으면 모든 테이블이 그대로 나오므로, 측정을 끈 실행은 같은 seed에서 전과 같은 편집을 함
+function editableTableIds(doc: Y.Doc): string[] {
+  const ids: string[] = []
+  for (const [id, table] of getTables(doc)) {
+    if (!isProbeTable(table)) {
+      ids.push(id)
+    }
+  }
+  return ids
+}
+
+// 모든 무작위 편집이 테이블을 고를 때 이 함수를 거치므로, 측정용 테이블 제외는 여기 한 곳에서 처리됨
 function randomTableId(doc: Y.Doc, random: Random): string | undefined {
-  return random.pick([...getTables(doc).keys()])
+  return random.pick(editableTableIds(doc))
 }
 
 // 무작위 테이블의 무작위 컬럼, 컬럼이 없으면 undefined

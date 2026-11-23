@@ -9,7 +9,7 @@
   },
   "scripts": {
     "bot": "tsx src/index.ts",
-    "test": "tsx --test src/converge.test.ts src/reconnect.test.ts src/actions.test.ts",
+    "test": "tsx --test src/converge.test.ts src/reconnect.test.ts src/actions.test.ts src/probe.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
