@@ -57,9 +57,10 @@ sudo install kubectl /usr/local/bin/kubectl && rm kubectl
 ```bash
 git clone https://github.com/ngds-team01/erd-editor.git && cd erd-editor
 make up      # 클러스터 생성 (노드 4개, Kubernetes v1.37.0)
-make server  # 서버 이미지 빌드 → 클러스터에 넣기 (서버 코드 고치면 다시)
-make client  # 클라이언트 이미지 빌드 → 클러스터에 넣기 (클라이언트 코드 고치면 다시)
-make deploy  # Redis, MinIO, 편집 서버, 클라이언트, HAProxy, Prometheus, Grafana 배포
+make server  # 서버 이미지 빌드 → 클러스터에 넣기
+make client  # 클라이언트 이미지 빌드 → 클러스터에 넣기
+make worker  # 워커 이미지 빌드 → 클러스터에 넣기
+make deploy  # Redis, MinIO, 편집 서버, 클라이언트, 스냅샷 워커, HAProxy, Prometheus, Grafana 배포
 make status  # 상태 확인 (파드가 모두 Running·Completed면 완료)
 curl -i localhost:8088/readyz   # 첫 줄이 200 OK면 접속 성공
 make grafana # 대시보드 → http://localhost:3000/d/erd-editor (Ctrl+C로 종료)

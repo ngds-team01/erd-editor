@@ -3,8 +3,9 @@ KIND_CONFIG  := deploy/kind/cluster.yaml
 CONTEXT      := kind-$(CLUSTER_NAME)
 SERVER_IMAGE := crdt-server:dev
 CLIENT_IMAGE := crdt-client:dev
+WORKER_IMAGE := crdt-worker:dev
 
-.PHONY: up down status server deploy reset grafana client
+.PHONY: up down status server deploy reset grafana client worker
 
 up:
 	@kind get clusters 2>/dev/null | grep -qx $(CLUSTER_NAME) || kind create cluster --config $(KIND_CONFIG)
@@ -38,4 +39,9 @@ client:
 	docker build -t $(CLIENT_IMAGE) ./client
 	kind load docker-image $(CLIENT_IMAGE) --name $(CLUSTER_NAME)
 	@kubectl --context $(CONTEXT) get deployment client >/dev/null 2>&1 && kubectl --context $(CONTEXT) rollout restart deployment/client || true
+
+worker:
+	docker build -t $(WORKER_IMAGE) ./worker
+	kind load docker-image $(WORKER_IMAGE) --name $(CLUSTER_NAME)
+	@kubectl --context $(CONTEXT) get deployment snapshot-worker >/dev/null 2>&1 && kubectl --context $(CONTEXT) rollout restart deployment/snapshot-worker || true
 

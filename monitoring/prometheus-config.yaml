@@ -26,3 +26,15 @@ scrape_configs:
         action: keep
       - source_labels: [__meta_kubernetes_pod_name]
         target_label: pod
+
+  - job_name: worker
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [default]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app, __meta_kubernetes_pod_container_port_number]
+        regex: snapshot-worker;8081
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
