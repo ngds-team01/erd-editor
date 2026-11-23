@@ -138,7 +138,7 @@ p50·p95는 충분하지만 p99는 맨 위 1~2개 값으로 정해져 실행마�
 
 ## 실험별 실행
 
-실험 조건(접속자 수, 반복 횟수, 목표 값)은 제안서를 따른다. 아래는 P1(#55) 기능으로 할 수 있는 범위다.
+실험 조건(접속자 수, 반복 횟수, 목표 값)은 제안서를 따른다. 아래는 지금 봇 기능(#55 )으로 할 수 있는 범위다.
 
 ### 실험 1. 접속자 수별 동기화 지연
 
@@ -180,7 +180,7 @@ kubectl --context kind-erd delete pod <파드 이름> --force --grace-period=0
 
 - 봇 로그의 `끊김 (code 1006) → …ms 뒤 재접속` 줄과 마지막 PASS(끊긴 동안 한 편집도 병합됨)를 확인한다
 - `--force` 없이 지우면(`kubectl --context kind-erd delete pod <파드 이름>`) 서버가 SIGTERM을 받아 1012로 닫으므로(contracts 7.2), code 1012와 0~500ms 대기가 나와야 한다
-- 재접속 시간(끊김 → 다시 동기화)과 전원 이탈 후 유실 수는 P2에서 추가한다
+- 재접속 시간(끊김 → 다시 동기화)과 전원 이탈 후 유실 수는 아직 재지 않는다 (#56 에서 추가)
 
 ### 실험 3. 라우팅 전략 비교 · 스케일아웃
 
@@ -194,7 +194,7 @@ kubectl --context kind-erd set env deployment/editor PROPAGATION_MODE=adaptive
 ```
 
 - 바꾼 뒤 파드가 다시 뜨면(`make status`) 같은 봇 명령으로 지연을 잰다
-- 여러 문서 동시 부하(`--docs 20 --bots-per-doc 5`)와 단계별 부하는 P2·P3에서 추가한다
+- 여러 문서 동시 부하(예: 문서 20개 × 5명)와 접속자 수를 단계적으로 늘리는 부하는 아직 없다 (#56 , #57 에서 추가)
 - Redis 명령 수(`INFO commandstats`), Redis CPU, HAProxy 임의 분산 설정은 loadtest 밖(인프라)에서 준비한다
 
 ## 개발
