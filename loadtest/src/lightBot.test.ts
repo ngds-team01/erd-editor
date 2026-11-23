@@ -10,14 +10,15 @@ import type WebSocket from 'ws'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import * as syncProtocol from 'y-protocols/sync'
 import * as Y from 'yjs'
-import { createLightBot } from './lightBot'
+import { botUser } from './bot'
+import { createLightBot, LIGHT_LIMITS } from './lightBot'
 import type { LightBot } from './lightBot'
 import { createTable, getTables } from './model'
 import type { ReconnectEvent } from './reconnect'
 
 const MESSAGE_SYNC = 0
 const MESSAGE_AWARENESS = 1
-const USER = { id: 'u1', name: '가벼운 봇', color: '#0d74ce' }
+const SEED = 7
 
 // 서버 문서 하나만 가진 최소 서버: 접속하면 SyncStep1, 받은 sync·awareness는 서버 문서에 적용 (server/src/doc.ts와 같음)
 async function startServer() {
@@ -93,8 +94,16 @@ describe('createLightBot', () => {
   async function setup(onReconnect?: (event: ReconnectEvent) => void) {
     const server = await startServer()
     cleanups.push(server.stop)
-    // 지터 0: 1012면 바로 재접속
-    const bot: LightBot = createLightBot({ url: server.url, docId: 'doc', index: 0, user: USER, onReconnect, random: () => 0 })
+    // 지터 0: 1012면 바로 재접속, 편집 테스트가 짧게 끝나도록 초당 50회
+    const bot: LightBot = createLightBot({
+      url: server.url,
+      docId: 'doc',
+      index: 0,
+      seed: SEED,
+      rate: 50,
+      onReconnect,
+      reconnectRandom: () => 0,
+    })
     cleanups.push(() => bot.destroy())
     await bot.waitSynced(2000)
     return { server, bot }
@@ -103,7 +112,8 @@ describe('createLightBot', () => {
   it('접속하면 사용자 정보를 올리고, 내 편집을 서버 문서에 보냄', async () => {
     const { server, bot } = await setup()
     await waitFor(() => server.awareness.getStates().has(bot.doc.clientID))
-    assert.equal(server.awareness.getStates().get(bot.doc.clientID)?.user?.name, '가벼운 봇')
+    // 정식 봇과 같은 방식으로 만든 이름
+    assert.equal(server.awareness.getStates().get(bot.doc.clientID)?.user?.name, botUser(SEED, 0).name)
 
     const tableId = createTable(bot.doc, { logicalName: '주문', physicalName: 'orders', position: { x: 0, y: 0 } })
     await waitFor(() => getTables(server.doc).has(tableId))
@@ -132,6 +142,23 @@ describe('createLightBot', () => {
     await bot.waitSynced(2000)
     await waitFor(() => getTables(server.doc).has(tableId))
     assert.deepEqual(events, [{ kind: 'retry', code: 1012, delayMs: 0, attempt: 0 }])
+  })
+
+  it('편집 반복: 한도 안에서 자기 테이블만 만들어 편집하고, 편집 대상을 awareness에 올림', async () => {
+    const { server, bot } = await setup()
+    bot.start()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    await bot.stop()
+
+    const total = Object.values(bot.stats.actions).reduce((sum, count) => sum + count, 0)
+    assert.ok(total >= 5, `편집 ${total}회`)
+    // 서버 문서의 테이블은 모두 이 봇이 만든 것이고, 한도(2개)를 넘지 않음
+    await waitFor(() => getTables(server.doc).size === getTables(bot.doc).size)
+    const tables = getTables(server.doc).size
+    assert.ok(tables >= LIGHT_LIMITS.minTables && tables <= LIGHT_LIMITS.maxTables, `테이블 ${tables}개`)
+    assert.ok(bot.stats.updatesSent > 0)
+    // 마지막 편집 대상이 서버의 awareness 상태에 있음 (테이블을 지운 직후면 null일 수 있어 키만 확인)
+    await waitFor(() => 'editing' in (server.awareness.getStates().get(bot.doc.clientID) ?? {}))
   })
 
   it('끝내면 서버에서 내 awareness 상태가 바로 지워짐', async () => {

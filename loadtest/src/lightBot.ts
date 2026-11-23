@@ -12,8 +12,11 @@ import WebSocket from 'ws'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import * as syncProtocol from 'y-protocols/sync'
 import * as Y from 'yjs'
+import type { ActionName, EditLimits } from './actions'
+import { botUser } from './bot'
+import { createEditLoop } from './editLoop'
 import { initPresence } from './presence'
-import type { PresenceUser } from './presence'
+import { createRandom } from './random'
 import { attachReconnect } from './reconnect'
 import type { CloseInfo, ReconnectEvent, ReconnectTarget } from './reconnect'
 
@@ -21,21 +24,32 @@ import type { CloseInfo, ReconnectEvent, ReconnectTarget } from './reconnect'
 const MESSAGE_SYNC = 0
 const MESSAGE_AWARENESS = 1
 
+// 가벼운 봇의 편집 한도: 자기가 만든 테이블만 편집하므로 봇마다 작게 둠
+// 정식 봇 한도(테이블 30개)를 그대로 쓰면 가벼운 봇 88개가 테이블을 2,600개 넘게 만들어
+// 정식 봇·서버가 실제 ERD와 동떨어진 크기의 문서를 다루게 됨
+export const LIGHT_LIMITS: EditLimits = { maxTables: 2, maxColumns: 12, maxRelations: 2, minTables: 1 }
+
 export type LightBotOptions = {
   // 서버 주소, 뒤에 /{docId}를 붙여 접속 (contracts 4.1)
   url: string
   docId: string
-  // 봇 번호, 로그에 사용
+  // 봇 번호, 로그·시드·사용자 이름에 사용 (정식 봇 번호와 겹치지 않게 부르는 쪽이 정함)
   index: number
-  // awareness에 올릴 사용자 정보 (정식 봇과 같은 형식)
-  user: PresenceUser
+  seed: number
+  // 봇 1개의 초당 편집 수
+  rate: number
+  limits?: EditLimits
   // 재접속할 때마다 불림, 로그 출력은 부르는 쪽이 정함
   onReconnect?: (event: ReconnectEvent) => void
-  // 재접속 지터용 난수, 테스트에서 고정값을 넣음
-  random?: () => number
+  // 재접속 지터용 난수 (편집용 시드 난수와 따로), 테스트에서 고정값을 넣음
+  reconnectRandom?: () => number
 }
 
 export type LightBotStats = {
+  // 편집 종류별 횟수
+  actions: Partial<Record<ActionName, number>>
+  // 내가 만든 문서 변경(update) 수
+  updatesSent: number
   // 서버에서 받은 메시지 수와 크기 (반영하지 않고 버린 것 포함)
   messagesReceived: number
   bytesReceived: number
@@ -51,6 +65,10 @@ export type LightBot = {
   stats: LightBotStats
   // 서버가 첫 SyncStep1을 보낼 때까지 대기, timeoutMs 안에 안 오면 오류
   waitSynced: (timeoutMs: number) => Promise<void>
+  // 편집 반복 시작
+  start: () => void
+  // 편집 반복을 멈추고, 진행 중인 드래그가 끝날 때까지 대기
+  stop: () => Promise<void>
   // 접속 종료
   destroy: () => void
 }
@@ -64,11 +82,28 @@ function message(type: number, write: (encoder: encoding.Encoder) => void): Uint
 }
 
 export function createLightBot(options: LightBotOptions): LightBot {
-  const { url, docId, index, user, onReconnect = () => {}, random = Math.random } = options
+  const {
+    url,
+    docId,
+    index,
+    seed,
+    rate,
+    limits = LIGHT_LIMITS,
+    onReconnect = () => {},
+    reconnectRandom = Math.random,
+  } = options
   const doc = new Y.Doc()
   // Awareness는 15초마다 내 상태를 다시 올려 줌 (안 올리면 30초 뒤 다른 사람 화면에서 나간 사람으로 처리됨)
   const awareness = new awarenessProtocol.Awareness(doc)
-  const stats: LightBotStats = { messagesReceived: 0, bytesReceived: 0, disconnects: 0 }
+  // 편집 반복은 정식 봇과 같은 것을 씀, 내 문서에는 내 테이블만 있으므로 자기 테이블만 편집하게 됨
+  const editLoop = createEditLoop({ doc, awareness, random: createRandom(seed + index), rate, limits })
+  const stats: LightBotStats = {
+    actions: editLoop.actions,
+    updatesSent: 0,
+    messagesReceived: 0,
+    bytesReceived: 0,
+    disconnects: 0,
+  }
 
   let socket: WebSocket | null = null
   let synced = false
@@ -153,10 +188,11 @@ export function createLightBot(options: LightBotOptions): LightBot {
     },
     connect,
   }
-  const reconnector = attachReconnect(target, onReconnect, random)
+  const reconnector = attachReconnect(target, onReconnect, reconnectRandom)
 
   // 내 편집 → 서버로 (다른 사람의 편집은 반영하지 않으므로 이 문서의 변경은 모두 내 편집)
   doc.on('update', (update: Uint8Array) => {
+    stats.updatesSent += 1
     send(message(MESSAGE_SYNC, (encoder) => syncProtocol.writeUpdate(encoder, update)))
   })
   // 내 awareness 변경·15초 재전송 → 서버로 (다른 사람 상태는 적용하지 않으므로 바뀌는 것은 내 상태뿐)
@@ -169,7 +205,8 @@ export function createLightBot(options: LightBotOptions): LightBot {
     )
   })
 
-  initPresence(awareness, user)
+  // 정식 봇과 같은 방식으로 이름·색을 만듦 (같은 seed·번호면 같은 이름)
+  initPresence(awareness, botUser(seed, index))
   connect()
 
   return {
@@ -198,8 +235,12 @@ export function createLightBot(options: LightBotOptions): LightBot {
         }
         syncListeners.push(onSync)
       }),
+    start: editLoop.start,
+    stop: editLoop.stop,
     destroy: () => {
       destroyed = true
+      // 오류로 중간에 끝날 때는 stop 없이 불리므로, 닫은 문서를 계속 편집하지 않게 반복도 멈춤
+      void editLoop.stop()
       reconnector.cancel()
       // 내 상태를 지워 다른 사람 화면에서 바로 빠지게 한 뒤 닫음 (Awareness의 15초 타이머도 멈춤)
       awareness.destroy()
