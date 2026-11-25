@@ -128,4 +128,19 @@ describe('봇의 재접속 시간 기록', () => {
       await server.stop()
     }
   })
+
+  it('destroy로 일부러 끊을 때는 끊김으로 세지 않음 (restore에서 봇을 내보낼 때)', async () => {
+    const server = await startServer()
+    const bot = createBot({ url: server.url, docId: 'destroy-test', index: 0, seed: 1, rate: 1 })
+    try {
+      await bot.waitSynced(2000)
+      bot.destroy()
+      await waitFor(() => server.connections() === 0)
+      assert.equal(bot.stats.disconnects, 0)
+      assert.equal(bot.reconnects.pending(), 0)
+    } finally {
+      bot.destroy()
+      await server.stop()
+    }
+  })
 })

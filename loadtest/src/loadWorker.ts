@@ -40,8 +40,10 @@ async function prepare(): Promise<void> {
             console.error(`가벼운 봇 ${index}: 서버가 문서 주소를 거부해 재접속하지 않습니다 (code ${event.code})`)
             return
           }
+          // 한 번도 동기화하지 못한 채 닫혔으면 '접속 실패' (bot.ts와 같은 문구)
+          const what = event.beforeFirstSync ? '접속 실패' : '끊김'
           console.log(
-            `가벼운 봇 ${index}: 끊김 (code ${event.code}) → ${Math.round(event.delayMs)}ms 뒤 재접속 (연속 실패 ${event.attempt}회)`,
+            `가벼운 봇 ${index}: ${what} (code ${event.code}) → ${Math.round(event.delayMs)}ms 뒤 재접속 (연속 실패 ${event.attempt}회)`,
           )
         },
       }),

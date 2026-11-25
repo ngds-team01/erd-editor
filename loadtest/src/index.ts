@@ -202,6 +202,7 @@ async function main(): Promise<boolean> {
       groups.push(group)
       nextIndex = group.nextIndex
     }
+    printProbeTargets(groups)
     loads = startLoadProcesses(nextIndex)
     // 모든 문서의 편집하는 봇 / 편집하는 봇 + 측정 봇
     const bots = groups.flatMap((group) => group.bots)
@@ -340,6 +341,24 @@ async function main(): Promise<boolean> {
     // 정상 흐름이면 이미 끝났으므로 아무 일도 없음, 오류로 중간에 끝날 때 남은 부하 프로세스를 정리
     loads.forEach((load) => load.kill())
   }
+}
+
+// 지연 측정 봇이 어디에서 어디로 재는지 한 번 출력 (--probe를 껐으면 출력하지 않음)
+// 문서가 하나면 봇 번호까지, 여럿이면 문서마다 같은 구성이라 한 줄로 줄임
+function printProbeTargets(groups: readonly DocGroup[]): void {
+  const probes = groups.flatMap((group) => (group.probe ? [group.probe] : []))
+  if (probes.length === 0) {
+    return
+  }
+  const route = `${options.url} → ${options.receiverUrl}`
+  if (probes.length === 1) {
+    const [{ sender, receiver }] = probes
+    console.log(
+      `지연 측정 · ${options.probeIntervalMs}ms마다 · 보내는 봇(봇 ${sender.index}) ${options.url} → 받는 봇(봇 ${receiver.index}) ${options.receiverUrl}`,
+    )
+    return
+  }
+  console.log(`지연 측정 · ${options.probeIntervalMs}ms마다 · 문서마다 보내는 봇 1개 → 받는 봇 1개 (문서 ${probes.length}개) · ${route}`)
 }
 
 // 편집할 문서 ID 목록: 하나면 --doc 그대로, 여럿이면 --doc 뒤에 -1, -2 … 를 붙임

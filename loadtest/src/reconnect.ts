@@ -16,9 +16,11 @@ export type ReconnectTarget = {
 }
 
 // retry: delayMs 뒤 다시 접속함, attempt는 이번 대기 시간 계산에 쓴 연속 실패 횟수 (0 → 0.5s, 1 → 1s …)
+//   beforeFirstSync: 서버와 한 번도 동기화하지 못한 채 닫힘 = 붙어 있다 끊긴 것이 아니라 접속 자체가 실패
+//   (서버가 꺼져 있거나 주소가 틀림, 로그를 '끊김' 대신 '접속 실패'로 구분하는 데 씀)
 // stop: 재접속하지 않음 (4400, 잘못된 문서 주소)
 export type ReconnectEvent =
-  | { kind: 'retry'; code: number; delayMs: number; attempt: number }
+  | { kind: 'retry'; code: number; delayMs: number; attempt: number; beforeFirstSync: boolean }
   | { kind: 'stop'; code: number }
 
 export type Reconnector = {
@@ -38,6 +40,8 @@ export function attachReconnect(
   let attempt = 0
   let timer: ReturnType<typeof setTimeout> | null = null
   let cancelled = false
+  // 한 번이라도 동기화했는지
+  let everSynced = false
 
   provider.on('closed', ({ code }) => {
     if (cancelled) {
@@ -48,7 +52,7 @@ export function attachReconnect(
       onEvent({ kind: 'stop', code })
       return
     }
-    onEvent({ kind: 'retry', code, delayMs: delay, attempt })
+    onEvent({ kind: 'retry', code, delayMs: delay, attempt, beforeFirstSync: !everSynced })
     // 1012는 계획된 재시작이라 실패로 세지 않음
     if (code !== CLOSE_SERVICE_RESTART) {
       attempt += 1
@@ -63,6 +67,7 @@ export function attachReconnect(
   provider.on('sync', (synced) => {
     if (synced) {
       attempt = 0
+      everSynced = true
     }
   })
 

@@ -136,9 +136,6 @@ function createProbeBots(options: DocGroupOptions, senderIndex: number): ProbeBo
   // 경로마다 기록장을 따로 둠, 순번도 경로마다 1부터 셈
   const updateLog = createProbeLog('update')
   const awarenessLog = createProbeLog('awareness')
-  console.log(
-    `지연 측정 · ${options.probeIntervalMs}ms마다 · 보내는 봇(봇 ${sender.index}) ${options.url} → 받는 봇(봇 ${receiver.index}) ${options.receiverUrl}`,
-  )
   // 멈추는 함수 모음, 시작 전이면 비어 있어 멈춰도 아무 일도 없음
   let senderStops: (() => void)[] = []
   let watcherStops: (() => void)[] = []

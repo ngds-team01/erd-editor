@@ -77,8 +77,10 @@ export function createBot(options: BotOptions): Bot {
       console.error(`봇 ${index}: 서버가 문서 주소를 거부해 재접속하지 않습니다 (code ${event.code})`)
       return
     }
+    // 한 번도 동기화하지 못한 채 닫혔으면 '접속 실패' (서버가 꺼져 있거나 주소가 틀림)
+    const what = event.beforeFirstSync ? '접속 실패' : '끊김'
     console.log(
-      `봇 ${index}: 끊김 (code ${event.code}) → ${Math.round(event.delayMs)}ms 뒤 재접속 (연속 실패 ${event.attempt}회)`,
+      `봇 ${index}: ${what} (code ${event.code}) → ${Math.round(event.delayMs)}ms 뒤 재접속 (연속 실패 ${event.attempt}회)`,
     )
   })
   // 위 '끊김' 줄과 짝이 되는 줄, 끊긴 뒤 다시 동기화될 때까지 걸린 시간을 출력
@@ -104,7 +106,8 @@ export function createBot(options: BotOptions): Bot {
   })
   let destroyed = false
   provider.on('status', ({ status }) => {
-    if (status === 'disconnected') {
+    // destroy()로 일부러 접속을 끊을 때도 'disconnected'가 오므로 세지 않음 (restore에서 봇을 내보낼 때)
+    if (status === 'disconnected' && !destroyed) {
       stats.disconnects += 1
     }
   })
