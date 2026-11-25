@@ -3,8 +3,9 @@ import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import type { Bot } from './bot'
 import { firstDifference, groupByHash, waitForConvergence } from './converge'
-import type { HashGroup, NamedDoc } from './converge'
+import type { HashGroup } from './converge'
 import { createDocGroup } from './docGroup'
+import type { DocGroup } from './docGroup'
 import { startEventLoopMonitor } from './eventLoop'
 import type { EventLoopSummary } from './eventLoop'
 import { startLoadProcess } from './loadProcess'
@@ -16,7 +17,7 @@ import type { ReconnectSample } from './reconnectTime'
 import { captureState, compareStates } from './restore'
 import type { DocState } from './restore'
 import { saveRun } from './results'
-import type { RestoreRecord } from './results'
+import type { DocRecord, RestoreRecord } from './results'
 import { assertSingleYjs } from './singleYjs'
 import { summarize } from './stats'
 
@@ -36,7 +37,11 @@ function readOptions() {
       // 서버 주소 (HAProxy 입구, contracts 4.1)
       url: { type: 'string', default: 'ws://localhost:8088/ws' },
       // 편집할 문서, 지정하지 않으면 매번 새 문서
+      // --docs가 2 이상이면 이 이름 뒤에 -1, -2 … 를 붙인 문서들 (예: loadtest-123-1 … loadtest-123-20)
       doc: { type: 'string', default: `loadtest-${Date.now()}` },
+      // 동시에 편집할 문서 수 (실험 3), 문서마다 봇 --bots개
+      docs: { type: 'string', default: '1' },
+      // 문서 하나에 붙는 정식 봇 수 (--docs 20 --bots 5 = 문서 20개 × 5명)
       bots: { type: 'string', default: '10' },
       // 부하 봇 수: 받은 편집을 반영하지 않는 가벼운 봇을 별도 부하 프로세스에서 돌림 (loadWorker.ts)
       // 이 프로세스(측정·수렴 확인)와 스레드가 달라, 부하가 커져도 받는 봇의 측정이 부풀려지지 않음
@@ -98,9 +103,16 @@ function readOptions() {
     throw new Error(`--load-processes(${loadProcesses})는 --load-bots(${loadBots})보다 클 수 없습니다`)
   }
 
+  const docs = positiveInteger('docs', values.docs)
+  // 부하 프로세스는 아직 문서 하나만 받음 (loadWorker.ts), 여러 문서에서는 정식 봇만 씀
+  if (docs > 1 && loadBots > 0) {
+    throw new Error('--load-bots는 아직 --docs 1에서만 쓸 수 있습니다 (여러 문서에서는 --bots로 문서당 봇 수를 정함)')
+  }
+
   return {
     url: values.url,
     docId: values.doc,
+    docs,
     bots: positiveInteger('bots', values.bots),
     loadBots,
     loadProcesses,
@@ -137,10 +149,13 @@ const PROGRESS_INTERVAL_MS = 5_000
 // 해시 출력 길이, 64자 전부는 길어 앞부분만 표시
 const SHORT_HASH = 12
 
-// 수렴했으면 true
+// 모든 문서가 PASS면 true
 async function main(): Promise<boolean> {
-  if (!DOC_ID_PATTERN.test(options.docId)) {
-    throw new Error(`문서 ID 형식이 틀립니다: ${options.docId} (영문, 숫자, _, - 로 1~64자)`)
+  const docIds = docIdsFor(options.docId, options.docs)
+  for (const docId of docIds) {
+    if (!DOC_ID_PATTERN.test(docId)) {
+      throw new Error(`문서 ID 형식이 틀립니다: ${docId} (영문, 숫자, _, - 로 1~64자)`)
+    }
   }
   // 봇을 띄우기 전에 yjs가 한 벌인지 먼저 확인, 두 벌이면 편집이 깨지므로 바로 멈춤
   assertSingleYjs()
@@ -149,41 +164,59 @@ async function main(): Promise<boolean> {
 
   const loadLabel =
     options.loadBots > 0 ? ` + 부하 봇 ${options.loadBots}개(부하 프로세스 ${options.loadProcesses}개)` : ''
+  const docLabel =
+    docIds.length === 1
+      ? `문서 ${docIds[0]} · 봇 ${options.bots}개`
+      : `문서 ${docIds.length}개 (${docIds[0]} … ${docIds[docIds.length - 1]}) · 문서당 봇 ${options.bots}개`
   console.log(
-    `문서 ${options.docId} · 봇 ${options.bots}개${loadLabel} · ${options.durationSec}초 · 봇당 초당 ${options.rate}회 · seed ${options.seed}`,
+    `${docLabel}${loadLabel} · ${options.durationSec}초 · 봇당 초당 ${options.rate}회 · seed ${options.seed}`,
   )
   console.log(`서버 ${options.url}`)
 
   // WebsocketProvider는 Node에서 provider마다 process 'exit' 리스너를 1개씩 등록함
-  // 기본 한도 10개를 넘으면 메모리 누수 경고가 나므로 봇 수(+보내는 봇·받는 봇·관찰자)만큼 한도를 늘림
-  process.setMaxListeners(options.bots + 13)
+  // 기본 한도 10개를 넘으면 메모리 누수 경고가 나므로 봇 수(+문서마다 보내는 봇·받는 봇·관찰자)만큼 한도를 늘림
+  process.setMaxListeners((options.bots + 3) * docIds.length + 10)
 
-  // 1. 봇을 ramp 간격으로 하나씩 접속시키고, 모두 첫 동기화가 끝날 때까지 대기
-  // 문서 하나에 딸린 봇 묶음: 편집하는 봇 + 지연 측정 봇(--probe) + 나중에 붙는 관찰자 (docGroup.ts)
-  const group = await createDocGroup({
-    url: options.url,
-    receiverUrl: options.receiverUrl,
-    docId: options.docId,
-    firstIndex: 0,
-    bots: options.bots,
-    seed: options.seed,
-    rate: options.rate,
-    rampMs: options.rampMs,
-    probe: options.probe,
-    probeIntervalMs: options.probeIntervalMs,
-  })
-  const { bots, probe, everyBot } = group
+  // 문서마다 봇 묶음 하나: 편집하는 봇 + 지연 측정 봇(--probe) + 나중에 붙는 관찰자 (docGroup.ts)
+  const groups: DocGroup[] = []
   // 부하 프로세스: 부하 봇을 나눠 맡겨 띄움, 각 프로세스 안에서 봇이 ramp 간격으로 접속
-  // 봇 번호는 묶음 다음 번호부터 (부하 봇은 다른 사람의 편집을 반영하지 않아 수렴 확인에서 뺌)
-  const loads = startLoadProcesses(group.nextIndex)
+  // (부하 봇은 다른 사람의 편집을 반영하지 않아 수렴 확인에서 뺌)
+  let loads: LoadProcess[] = []
   try {
-    await Promise.all([group.waitSynced(SYNC_TIMEOUT_MS), ...loads.map((load) => load.ready)])
+    // 1. 문서 순서대로 봇을 ramp 간격으로 하나씩 접속시키고, 모두 첫 동기화가 끝날 때까지 대기
+    // 봇 번호는 앞 묶음의 다음 번호부터 이어 써서 문서끼리 시드·이름이 겹치지 않게 함
+    let nextIndex = 0
+    for (const docId of docIds) {
+      const group = await createDocGroup({
+        url: options.url,
+        receiverUrl: options.receiverUrl,
+        docId,
+        firstIndex: nextIndex,
+        bots: options.bots,
+        seed: options.seed,
+        rate: options.rate,
+        rampMs: options.rampMs,
+        probe: options.probe,
+        probeIntervalMs: options.probeIntervalMs,
+      })
+      groups.push(group)
+      nextIndex = group.nextIndex
+    }
+    loads = startLoadProcesses(nextIndex)
+    // 모든 문서의 편집하는 봇 / 편집하는 봇 + 측정 봇
+    const bots = groups.flatMap((group) => group.bots)
+    const everyBot = groups.flatMap((group) => group.everyBot)
+
+    await Promise.all([
+      ...groups.map((group) => group.waitSynced(SYNC_TIMEOUT_MS)),
+      ...loads.map((load) => load.ready),
+    ])
     console.log(`봇 ${everyBot.length}개${loadLabel} 동기화 완료, 편집 시작`)
 
     // 2. 정해진 시간 동안 편집 (지연 측정을 켰으면 측정용 변경도 함께 보냄)
     // 측정 표본이 모이는 편집 구간 동안 봇 프로세스가 얼마나 바빴는지 함께 기록
     const stopEventLoopMonitor = startEventLoopMonitor()
-    group.start()
+    groups.forEach((group) => group.start())
     loads.forEach((load) => load.start())
     const startedAt = Date.now()
     const progress = setInterval(() => {
@@ -194,7 +227,10 @@ async function main(): Promise<boolean> {
     clearInterval(progress)
 
     // 3. 편집 멈춤 (진행 중인 드래그는 끝까지), 부하 프로세스는 멈춘 뒤 통계를 보내고 스스로 끝남
-    const [, loadStats] = await Promise.all([group.stop(), Promise.all(loads.map((load) => load.stop()))])
+    const [, loadStats] = await Promise.all([
+      Promise.all(groups.map((group) => group.stop())),
+      Promise.all(loads.map((load) => load.stop())),
+    ])
     // 수렴 확인은 해시 계산으로 일부러 바쁜 구간이라 빼고, 편집 구간만 요약
     const eventLoop = stopEventLoopMonitor()
     printSummary(bots)
@@ -203,58 +239,85 @@ async function main(): Promise<boolean> {
       printLoadSummary(loadStats)
     }
 
-    // 4. 봇끼리 수렴 확인: 아직 서버를 오가는 변경이 있으므로 같아질 때까지 기다림
+    // 4. 문서마다 봇끼리 수렴 확인: 아직 서버를 오가는 변경이 있으므로 같아질 때까지 기다림
     console.log(`수렴 확인 중 (최대 ${options.settleSec}초)`)
-    const result = await waitForConvergence(group.docs, options.settleSec * 1000)
+    const results = await Promise.all(
+      groups.map((group) => waitForConvergence(group.docs, options.settleSec * 1000)),
+    )
 
-    // 수렴을 기다리는 동안 늦게 온 측정용 변경까지 받았으므로, 여기서 측정을 마치고 지연 출력
-    group.stopWatching()
-    if (probe) {
-      printLatency(probe.updateLog)
-      printLatency(probe.awarenessLog)
+    // 수렴을 기다리는 동안 늦게 온 측정용 변경까지 받았으므로, 여기서 측정을 마치고 지연 출력 (모든 문서를 합친 값)
+    groups.forEach((group) => group.stopWatching())
+    const probes = groups.flatMap((group) => (group.probe ? [group.probe] : []))
+    if (probes.length > 0) {
+      printLatency(probes.map((probe) => probe.updateLog))
+      printLatency(probes.map((probe) => probe.awarenessLog))
     }
     // 재접속 기록도 수렴을 기다리는 동안 다시 붙은 봇까지 모은 뒤 출력
-    const reconnects = everyBot.flatMap((bot) => bot.reconnects.samples())
-    const reconnectPending = everyBot.reduce((sum, bot) => sum + bot.reconnects.pending(), 0)
-    printReconnects(reconnects, reconnectPending)
+    printReconnects(
+      everyBot.flatMap((bot) => bot.reconnects.samples()),
+      everyBot.reduce((sum, bot) => sum + bot.reconnects.pending(), 0),
+    )
 
-    // 5-1. (restore) 봇이 가진 상태를 적어 두고 전부 내보낸 뒤 기다림
-    // 봇끼리 수렴하지 않았으면 기대 상태를 하나로 정할 수 없으므로 건너뛰고 converge처럼 확인 (결과는 FAIL)
+    // 5-1. (restore) 문서마다 봇이 가진 상태를 적어 두고, 모든 봇을 함께 내보낸 뒤 한 번 기다림
+    // 수렴하지 않은 문서가 있으면 그 문서의 기대 상태를 하나로 정할 수 없으므로 건너뛰고 converge처럼 확인 (결과는 FAIL)
     let leave: LeaveResult | null = null
     if (options.scenario === 'restore') {
-      if (result.converged) {
-        leave = await leaveAll(everyBot, group.docs)
+      if (results.every((result) => result.converged)) {
+        leave = await leaveAll(groups)
       } else {
-        console.log('봇끼리 수렴하지 않아 전원 이탈 단계를 건너뜁니다')
+        console.log('봇끼리 수렴하지 않은 문서가 있어 전원 이탈 단계를 건너뜁니다')
       }
     }
 
-    // 5-2. 관찰자 확인: 봇끼리만 같고 서버는 다를 수 있으므로, 새로 접속한 클라이언트가 받는 상태도 비교
+    // 5-2. 관찰자 확인: 봇끼리만 같고 서버는 다를 수 있으므로, 문서마다 새로 접속한 클라이언트가 받는 상태도 비교
     // restore에서는 봇이 모두 나간 뒤라, 관찰자가 받는 문서는 서버가 스냅샷 + Streams로 복원한 것
     // restore에서 파드를 전부 지웠으면 새 파드가 뜰 때까지 재접속하므로 더 오래 기다림
     // syncMs: 접속부터 동기화까지, 서버가 문서를 복원하는 시간이 들어감 (서버는 복원을 마친 뒤 SyncStep1에 답함, contracts 6.4)
-    const { observer, syncMs: observerSyncMs } = await group.connectObserver(
-      leave ? RESTORE_SYNC_TIMEOUT_MS : SYNC_TIMEOUT_MS,
+    const observed = await Promise.all(
+      groups.map((group) => group.connectObserver(leave ? RESTORE_SYNC_TIMEOUT_MS : SYNC_TIMEOUT_MS)),
     )
-    // restore에서도 봇 문서는 그대로 비교에 씀: 봇은 접속만 끊었고 Y.Doc은 나가기 전 상태로 메모리에 남아 있음
-    const groups = await groupByHash([...group.docs, { name: '관찰자', doc: observer.doc }])
 
-    let restore: RestoreRecord | null = null
-    if (leave) {
-      restore = {
-        waitMs: leave.waitMs,
-        observerSyncMs,
-        hashMatch: groups.length === 1,
-        loss: compareStates(leave.expected, captureState(observer.doc)),
-        botByClient: leave.botByClient,
-      }
-      printRestore(restore)
+    const docs: DocRecord[] = []
+    const hashGroups: HashGroup[][] = []
+    for (const [index, group] of groups.entries()) {
+      const result = results[index]
+      const { observer, syncMs } = observed[index]
+      // restore에서도 봇 문서는 그대로 비교에 씀: 봇은 접속만 끊었고 Y.Doc은 나가기 전 상태로 메모리에 남아 있음
+      const hashes = await groupByHash([...group.docs, { name: '관찰자', doc: observer.doc }])
+      const expected = leave?.docs[index]
+      const restore: RestoreRecord | null =
+        leave && expected
+          ? {
+              waitMs: leave.waitMs,
+              observerSyncMs: syncMs,
+              hashMatch: hashes.length === 1,
+              loss: compareStates(expected.state, captureState(observer.doc)),
+              botByClient: expected.botByClient,
+            }
+          : null
+      const lost = restore !== null && (restore.loss.missingInserts > 0 || restore.loss.missingDeletes > 0)
+      // restore를 골랐는데 이탈 단계를 건너뛰었으면 복원을 확인하지 못했으므로 PASS가 아님 (수렴 실패라 이미 false)
+      const passed = result.converged && hashes.length === 1 && !lost
+      hashGroups.push(hashes)
+      docs.push({
+        docId: group.docId,
+        bots: group.bots.length,
+        converged: result.converged,
+        convergeMs: result.elapsedMs,
+        hashGroups: hashes.length,
+        passed,
+        actions: totalActions(group.bots),
+        updatesSent: group.bots.reduce((sum, bot) => sum + bot.stats.updatesSent, 0),
+        disconnects: group.bots.reduce((sum, bot) => sum + bot.stats.disconnects, 0),
+        logs: group.probe ? [group.probe.updateLog, group.probe.awarenessLog] : [],
+        reconnects: group.everyBot.flatMap((bot) => bot.reconnects.samples()),
+        reconnectPending: group.everyBot.reduce((sum, bot) => sum + bot.reconnects.pending(), 0),
+        restore,
+      })
     }
 
-    const lost = restore !== null && (restore.loss.missingInserts > 0 || restore.loss.missingDeletes > 0)
-    // restore를 골랐는데 이탈 단계를 건너뛰었으면 복원을 확인하지 못했으므로 PASS가 아님 (수렴 실패라 이미 false)
-    const passed = result.converged && groups.length === 1 && !lost
-    printResult(passed, result.elapsedMs, groups)
+    const passed = docs.every((doc) => doc.passed)
+    printResults(docs, hashGroups)
 
     // 6. 결과 저장: PASS든 FAIL이든 남김 (FAIL 원인을 나중에 볼 수 있게)
     // 동기화 시간 초과처럼 중간에 오류가 나면 측정값이 없으므로 저장하지 않음
@@ -264,28 +327,27 @@ async function main(): Promise<boolean> {
       options: { ...options },
       startedAt: runStartedAt,
       finishedAt: new Date(),
-      passed,
-      convergeMs: result.elapsedMs,
-      hashGroups: groups.length,
-      actions: totalActions(bots),
-      updatesSent: bots.reduce((sum, bot) => sum + bot.stats.updatesSent, 0),
-      disconnects: bots.reduce((sum, bot) => sum + bot.stats.disconnects, 0),
       load: loadStats,
       eventLoop,
-      logs: probe ? [probe.updateLog, probe.awarenessLog] : [],
-      reconnects,
-      reconnectPending,
       scenario: options.scenario,
-      restore,
+      docs,
     })
     console.log(`결과 저장 · ${path.relative(process.cwd(), dir)}`)
     return passed
   } finally {
     // 측정을 멈추고 관찰자까지 접속을 끊음 (restore에서 이미 내보낸 봇은 그대로 둠)
-    group.destroy()
+    groups.forEach((group) => group.destroy())
     // 정상 흐름이면 이미 끝났으므로 아무 일도 없음, 오류로 중간에 끝날 때 남은 부하 프로세스를 정리
     loads.forEach((load) => load.kill())
   }
+}
+
+// 편집할 문서 ID 목록: 하나면 --doc 그대로, 여럿이면 --doc 뒤에 -1, -2 … 를 붙임
+function docIdsFor(base: string, count: number): string[] {
+  if (count === 1) {
+    return [base]
+  }
+  return Array.from({ length: count }, (_, index) => `${base}-${index + 1}`)
 }
 
 // 부하 봇을 프로세스 수만큼 고르게 나눠 띄움 (예: 93개 · 3개 → 31개씩)
@@ -342,9 +404,12 @@ function printEventLoop(summary: EventLoopSummary): void {
 }
 
 // 경로별 지연 요약 출력: 표본 수, 미도착 수, p50·p95·p99·최대
-function printLatency(log: ProbeLog): void {
-  const summary = summarize(log.samples().map((sample) => sample.latencyMs))
-  console.log(`지연 (${log.path}) · 보냄 ${log.sentCount()}개 · 받음 ${summary.count}개 · 미도착 ${log.missingCount()}개`)
+// 여러 문서면 문서마다의 기록(같은 경로)을 모두 합쳐 한 번에 출력 (문서별 값은 docs.csv)
+function printLatency(logs: readonly ProbeLog[]): void {
+  const summary = summarize(logs.flatMap((log) => log.samples().map((sample) => sample.latencyMs)))
+  const sent = logs.reduce((sum, log) => sum + log.sentCount(), 0)
+  const missing = logs.reduce((sum, log) => sum + log.missingCount(), 0)
+  console.log(`지연 (${logs[0].path}) · 보냄 ${sent}개 · 받음 ${summary.count}개 · 미도착 ${missing}개`)
   if (summary.count === 0) {
     return
   }
@@ -352,30 +417,37 @@ function printLatency(log: ProbeLog): void {
   console.log(`  p50 ${ms(summary.p50)} · p95 ${ms(summary.p95)} · p99 ${ms(summary.p99)} · 최대 ${ms(summary.max)}`)
 }
 
-// 전원 이탈 단계의 결과: 나가기 전 상태와 실제로 기다린 시간
+// 전원 이탈 단계의 결과: 문서마다 나가기 전 상태와, 실제로 기다린 시간 (모든 문서가 함께 기다림)
 type LeaveResult = {
-  expected: DocState
+  // 묶음 순서와 같은 순서
+  docs: {
+    state: DocState
+    // Y.Doc clientID → 봇 번호, 빠진 연산이 어느 봇의 편집인지 restore.csv에 남기기 위함 (부하 봇은 이 프로세스에 없어 빠짐)
+    botByClient: Map<number, number>
+  }[]
   waitMs: number
-  // Y.Doc clientID → 봇 번호, 빠진 연산이 어느 봇의 편집인지 restore.csv에 남기기 위함 (부하 봇은 이 프로세스에 없어 빠짐)
-  botByClient: Map<number, number>
 }
 
-// 봇 문서를 합쳐 기대 상태를 적고, 봇을 모두 내보낸 뒤 --restore-wait만큼(또는 Enter까지) 기다림
-async function leaveAll(bots: Bot[], docs: NamedDoc[]): Promise<LeaveResult> {
-  // 봇 문서를 모두 합친 상태 = 나가기 전 클라이언트 쪽에 있던 편집 전부 (수렴했으므로 어느 봇 하나와도 같음)
-  // 부하 봇의 편집도 정식 봇이 받아 두었으므로 여기에 들어감
-  const merged = new Y.Doc()
-  for (const { doc } of docs) {
-    Y.applyUpdate(merged, Y.encodeStateAsUpdate(doc))
-  }
-  const expected = captureState(merged)
-  merged.destroy()
-  const botByClient = new Map(bots.map((bot) => [bot.doc.clientID, bot.index]))
+// 문서마다 봇 문서를 합쳐 기대 상태를 적고, 모든 문서의 봇을 함께 내보낸 뒤 --restore-wait만큼(또는 Enter까지) 기다림
+async function leaveAll(groups: readonly DocGroup[]): Promise<LeaveResult> {
+  const docs = groups.map((group) => {
+    // 봇 문서를 모두 합친 상태 = 나가기 전 클라이언트 쪽에 있던 편집 전부 (수렴했으므로 어느 봇 하나와도 같음)
+    // 부하 봇의 편집도 정식 봇이 받아 두었으므로 여기에 들어감
+    const merged = new Y.Doc()
+    for (const { doc } of group.docs) {
+      Y.applyUpdate(merged, Y.encodeStateAsUpdate(doc))
+    }
+    const state = captureState(merged)
+    merged.destroy()
+    return { state, botByClient: new Map(group.everyBot.map((bot) => [bot.doc.clientID, bot.index])) }
+  })
 
   // 접속만 끊음, 각 봇의 Y.Doc은 남아 관찰자와 해시를 비교할 때 씀
+  const bots = groups.flatMap((group) => group.everyBot)
   bots.forEach((bot) => bot.destroy())
   const leftAt = Date.now()
-  console.log(`봇 ${bots.length}개 모두 종료 · 기대 상태 저장 (편집한 클라이언트 ${expected.clocks.size}개)`)
+  const clients = docs.reduce((sum, doc) => sum + doc.state.clocks.size, 0)
+  console.log(`봇 ${bots.length}개 모두 종료 · 기대 상태 저장 (편집한 클라이언트 ${clients}개)`)
   if (options.restoreWaitSec === null) {
     await waitForEnter('파드를 지우거나 스냅샷이 생기기를 기다린 뒤 Enter를 누르면 관찰자가 접속합니다')
   } else {
@@ -388,7 +460,7 @@ async function leaveAll(bots: Bot[], docs: NamedDoc[]): Promise<LeaveResult> {
   if (remaining > 0) {
     await sleep(remaining)
   }
-  return { expected, waitMs: Date.now() - leftAt, botByClient }
+  return { docs, waitMs: Date.now() - leftAt }
 }
 
 // Enter를 누를 때까지 대기
@@ -402,10 +474,11 @@ async function waitForEnter(message: string): Promise<void> {
 }
 
 // 복원 결과 출력: 대기 시간, 관찰자 동기화 시간, 해시, 빠진 연산 수와 빠진 클라이언트 (앞 10개)
-function printRestore(restore: RestoreRecord): void {
+// prefix: 여러 문서일 때 줄 앞에 붙이는 문서 이름 (예: '문서 loadtest-1-3 · ')
+function printRestore(restore: RestoreRecord, prefix = ''): void {
   const { loss } = restore
   console.log(
-    `복원 · 대기 ${(restore.waitMs / 1000).toFixed(1)}초 · 관찰자 동기화 ${Math.round(restore.observerSyncMs)}ms · ` +
+    `${prefix}복원 · 대기 ${(restore.waitMs / 1000).toFixed(1)}초 · 관찰자 동기화 ${Math.round(restore.observerSyncMs)}ms · ` +
       `해시 ${restore.hashMatch ? '같음' : '다름'} · 빠진 추가 ${loss.missingInserts}개 · 빠진 삭제 ${loss.missingDeletes}개`,
   )
   for (const client of loss.clients.slice(0, 10)) {
@@ -472,6 +545,43 @@ function printResult(passed: boolean, elapsedMs: number, groups: HashGroup[]): v
     console.log(`  첫 차이 (위치 ${difference.index})`)
     console.log(`    ${largest.hash.slice(0, SHORT_HASH)}: …${difference.a}…`)
     console.log(`    ${second.hash.slice(0, SHORT_HASH)}: …${difference.b}…`)
+  }
+}
+
+// 문서마다의 복원·수렴 결과 출력
+// 문서가 하나면 지금까지와 같은 출력, 여러 개면 문서마다 한 줄 + 실패한 문서의 자세한 내용 + 전체 결과 한 줄
+function printResults(docs: readonly DocRecord[], hashGroups: readonly HashGroup[][]): void {
+  if (docs.length === 1) {
+    const [doc] = docs
+    if (doc.restore) {
+      printRestore(doc.restore)
+    }
+    printResult(doc.passed, doc.convergeMs, hashGroups[0])
+    return
+  }
+
+  for (const [index, doc] of docs.entries()) {
+    const prefix = `문서 ${doc.docId} · `
+    if (doc.restore) {
+      printRestore(doc.restore, prefix)
+    }
+    const hash = hashGroups[index][0].hash.slice(0, SHORT_HASH)
+    console.log(
+      `${prefix}${doc.passed ? 'PASS' : 'FAIL'} · 봇 ${doc.bots}개 · 편집 ${doc.actions}회 · ` +
+        `수렴 ${(doc.convergeMs / 1000).toFixed(1)}초 · hash ${hash}${doc.hashGroups > 1 ? ` 외 ${doc.hashGroups - 1}종류` : ''}`,
+    )
+  }
+  const failed = docs.filter((doc) => !doc.passed)
+  // 실패한 문서는 해시 묶음과 첫 차이를 자세히 출력 (많으면 앞 3개만)
+  for (const doc of failed.slice(0, 3)) {
+    console.log(`문서 ${doc.docId}`)
+    printResult(false, doc.convergeMs, hashGroups[docs.indexOf(doc)])
+  }
+  const slowest = Math.max(...docs.map((doc) => doc.convergeMs))
+  if (failed.length === 0) {
+    console.log(`PASS · 문서 ${docs.length}개 모두 수렴 · 가장 늦은 문서 ${(slowest / 1000).toFixed(1)}초`)
+  } else {
+    console.log(`FAIL · 문서 ${docs.length}개 중 ${failed.length}개 실패: ${failed.map((doc) => doc.docId).join(', ')}`)
   }
 }
 
