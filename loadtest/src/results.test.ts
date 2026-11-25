@@ -1,4 +1,4 @@
-// 결과 파일(settings.json, samples.csv, summary.csv) 형식 확인, 임시 폴더에 저장해 봄
+// 결과 파일(settings.json, samples.csv, reconnects.csv, summary.csv) 형식 확인, 임시 폴더에 저장해 봄
 // 실행: npm test
 import assert from 'node:assert/strict'
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
@@ -7,7 +7,7 @@ import path from 'node:path'
 import { describe, it } from 'node:test'
 import { createProbeLog } from './probe'
 import { createRandom } from './random'
-import { samplesCsv, saveRun, summaryCsv, timestampForDir, toCsv } from './results'
+import { reconnectsCsv, samplesCsv, saveRun, summaryCsv, timestampForDir, toCsv } from './results'
 import type { RunRecord } from './results'
 import { percentile } from './stats'
 
@@ -27,6 +27,8 @@ function record(overrides: Partial<RunRecord> = {}): RunRecord {
     load: [],
     eventLoop: { utilization: 0.05, lagP50Ms: 0.1, lagP99Ms: 0.5, lagMaxMs: 2 },
     logs: [],
+    reconnects: [],
+    reconnectPending: 0,
     ...overrides,
   }
 }
@@ -129,8 +131,36 @@ describe('summaryCsv 부하 열', () => {
   })
 })
 
+describe('재접속 기록', () => {
+  const sample = (bot: number, disconnectedAt: number, durationMs: number) => ({
+    bot,
+    closeCode: 1006,
+    disconnectedAt,
+    syncedAt: disconnectedAt + durationMs,
+    durationMs,
+    failedAttempts: 0,
+  })
+
+  it('reconnects.csv는 끊긴 시각 순으로 한 줄씩', () => {
+    assert.deepEqual(parseCsv(reconnectsCsv([sample(3, 2000, 700.25), sample(1, 1000, 1200)])), [
+      ['bot', 'close_code', 'disconnected_at_ms', 'synced_at_ms', 'duration_ms', 'failed_attempts'],
+      ['1', '1006', '1000', '2200', '1200', '0'],
+      ['3', '1006', '2000', '2700.25', '700.25', '0'],
+    ])
+  })
+
+  it('summary.csv 맨 뒤에 재접속 열, 끊김이 없으면 개수 0·백분위 빈칸', () => {
+    const rows = parseCsv(summaryCsv(record({ reconnects: [sample(1, 0, 1000), sample(2, 0, 3000)], reconnectPending: 1 })))
+    const empty = parseCsv(summaryCsv(record()))
+    assert.deepEqual(rows[0], empty[0])
+    assert.deepEqual(rows[0].slice(-5), ['reconnects', 'reconnect_pending', 'reconnect_p50_ms', 'reconnect_p95_ms', 'reconnect_max_ms'])
+    assert.deepEqual(rows[1].slice(-5), ['2', '1', '2000', '2900', '3000'])
+    assert.deepEqual(empty[1].slice(-5), ['0', '0', '', '', ''])
+  })
+})
+
 describe('saveRun', () => {
-  it('폴더에 세 파일을 만들고, 같은 이름으로 다시 저장하면 덮어쓰지 않고 -2를 붙임', () => {
+  it('폴더에 네 파일을 만들고, 같은 이름으로 다시 저장하면 덮어쓰지 않고 -2를 붙임', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'loadtest-results-'))
     try {
       const update = createProbeLog('update')
@@ -141,7 +171,7 @@ describe('saveRun', () => {
 
       assert.equal(path.basename(first), '20261123-190502-test')
       assert.equal(path.basename(second), '20261123-190502-test-2')
-      assert.deepEqual(readdirSync(first).sort(), ['samples.csv', 'settings.json', 'summary.csv'])
+      assert.deepEqual(readdirSync(first).sort(), ['reconnects.csv', 'samples.csv', 'settings.json', 'summary.csv'])
 
       const settings = JSON.parse(readFileSync(path.join(first, 'settings.json'), 'utf8'))
       assert.equal(settings.options.seed, 42)

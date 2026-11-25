@@ -19,6 +19,7 @@ import {
   watchUpdates,
 } from './probe'
 import type { ProbeLog } from './probe'
+import type { ReconnectSample } from './reconnectTime'
 import { saveRun } from './results'
 import { assertSingleYjs } from './singleYjs'
 import { summarize } from './stats'
@@ -201,6 +202,10 @@ async function main(): Promise<boolean> {
       printLatency(probe.updateLog)
       printLatency(probe.awarenessLog)
     }
+    // 재접속 기록도 수렴을 기다리는 동안 다시 붙은 봇까지 모은 뒤 출력
+    const reconnects = everyBot.flatMap((bot) => bot.reconnects.samples())
+    const reconnectPending = everyBot.reduce((sum, bot) => sum + bot.reconnects.pending(), 0)
+    printReconnects(reconnects, reconnectPending)
 
     // 5. 관찰자 확인: 봇끼리만 같고 서버는 다를 수 있으므로, 새로 접속한 클라이언트가 받는 상태도 비교
     observer = createBot({
@@ -233,6 +238,8 @@ async function main(): Promise<boolean> {
       load: loadStats,
       eventLoop,
       logs: probe ? [probe.updateLog, probe.awarenessLog] : [],
+      reconnects,
+      reconnectPending,
     })
     console.log(`결과 저장 · ${path.relative(process.cwd(), dir)}`)
     return passed
@@ -361,6 +368,18 @@ function printLatency(log: ProbeLog): void {
   }
   const ms = (value: number) => `${value.toFixed(1)}ms`
   console.log(`  p50 ${ms(summary.p50)} · p95 ${ms(summary.p95)} · p99 ${ms(summary.p99)} · 최대 ${ms(summary.max)}`)
+}
+
+// 재접속 시간 요약 출력: 끊김이 없었으면 출력하지 않음
+// 아직 동기화되지 않은 봇이 있으면 그 수도 출력 (끝까지 복구하지 못한 봇이라 시간 기록에는 빠짐)
+function printReconnects(samples: readonly ReconnectSample[], pending: number): void {
+  if (samples.length === 0 && pending === 0) {
+    return
+  }
+  const summary = summarize(samples.map((sample) => sample.durationMs))
+  const ms = (value: number) => `${Math.round(value)}ms`
+  const times = summary.count > 0 ? ` · p50 ${ms(summary.p50)} · p95 ${ms(summary.p95)} · 최대 ${ms(summary.max)}` : ''
+  console.log(`재접속 · 다시 동기화 ${summary.count}회${times} · 아직 동기화 안 됨 ${pending}개`)
 }
 
 // 편집 종류별 합계, 보낸 update 수, 끊김 수 출력

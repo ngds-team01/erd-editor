@@ -1,8 +1,9 @@
 // 실행 결과를 파일로 저장 (제안서: 원본 CSV · 커밋 SHA · 설정을 함께 보관)
-// 실행마다 results/{날짜-시각}-{이름}/ 폴더에 세 파일을 만듦
-//   settings.json: 무엇으로 돌렸나 (인자, seed, 서버 주소, 커밋 SHA, 시작·종료 시각)
-//   samples.csv:   측정값 원본, 한 줄에 하나
-//   summary.csv:   이 실행의 요약 한 줄, 열 순서가 항상 같아 여러 실행의 줄을 이어 붙여 비교할 수 있음
+// 실행마다 results/{날짜-시각}-{이름}/ 폴더에 네 파일을 만듦
+//   settings.json:  무엇으로 돌렸나 (인자, seed, 서버 주소, 커밋 SHA, 시작·종료 시각)
+//   samples.csv:    지연 측정값 원본, 한 줄에 하나
+//   reconnects.csv: 재접속 기록 원본, 끊김 한 번에 한 줄
+//   summary.csv:    이 실행의 요약 한 줄, 열 순서가 항상 같아 여러 실행의 줄을 이어 붙여 비교할 수 있음
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -10,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import type { EventLoopSummary } from './eventLoop'
 import type { LoadStats } from './loadProcess'
 import type { ProbeLog, ProbePath, ProbeSample } from './probe'
+import type { ReconnectSample } from './reconnectTime'
 import { summarize } from './stats'
 
 // 기본 저장 위치: loadtest/results (이 파일 기준 ../results), .gitignore로 git에는 올리지 않음
@@ -45,6 +47,10 @@ export type RunRecord = {
   eventLoop: EventLoopSummary
   // 측정을 끈 실행은 빈 배열
   logs: ProbeLog[]
+  // 다시 동기화를 마친 끊김들 (정식 봇 + 측정 봇), 끊김이 없었으면 빈 배열
+  reconnects: ReconnectSample[]
+  // 실행이 끝날 때까지 다시 동기화되지 않은 봇 수
+  reconnectPending: number
 }
 
 // 폴더 이름용 날짜-시각, 이 컴퓨터 시간대 기준 (예: 20261123-191502)
@@ -78,6 +84,23 @@ export function samplesCsv(samples: readonly ProbeSample[]): string {
   return toCsv(
     ['path', 'seq', 'sent_at_ms', 'received_at_ms', 'latency_ms'],
     samples.map((sample) => [sample.path, sample.seq, ms(sample.sentAt), ms(sample.receivedAt), ms(sample.latencyMs)]),
+  )
+}
+
+// reconnects.csv: 봇 번호, close code, 끊긴 시각, 다시 동기화된 시각(epoch ms), 걸린 시간(ms), 실패한 재접속 수
+// 끊긴 시각 순으로 정렬해, 파드를 여러 번 지운 실행에서 몇 번째 삭제의 기록인지 시각으로 나눠 볼 수 있게 함
+export function reconnectsCsv(samples: readonly ReconnectSample[]): string {
+  const sorted = [...samples].sort((a, b) => a.disconnectedAt - b.disconnectedAt)
+  return toCsv(
+    ['bot', 'close_code', 'disconnected_at_ms', 'synced_at_ms', 'duration_ms', 'failed_attempts'],
+    sorted.map((sample) => [
+      sample.bot,
+      sample.closeCode,
+      ms(sample.disconnectedAt),
+      ms(sample.syncedAt),
+      ms(sample.durationMs),
+      sample.failedAttempts,
+    ]),
   )
 }
 
@@ -118,6 +141,16 @@ export function summaryCsv(record: RunRecord): string {
       [`${probePath}_max_ms`, summary ? ms(summary.max) : null],
     )
   }
+  // 재접속 열은 맨 뒤에 둠: 이전 실행의 summary.csv와 앞쪽 열 순서가 같게 유지
+  // 지연과 같이 reconnects.csv에 쓴 값(반올림 후)으로 계산, 끊김이 없으면 개수 0, 백분위는 빈칸
+  const reconnect = summarize(record.reconnects.map((sample) => ms(sample.durationMs)))
+  columns.push(
+    ['reconnects', reconnect.count],
+    ['reconnect_pending', record.reconnectPending],
+    ['reconnect_p50_ms', ms(reconnect.p50)],
+    ['reconnect_p95_ms', ms(reconnect.p95)],
+    ['reconnect_max_ms', ms(reconnect.max)],
+  )
   return toCsv(
     columns.map(([header]) => header),
     [columns.map(([, value]) => value)],
@@ -180,7 +213,7 @@ function createRunDir(root: string, base: string): string {
   }
 }
 
-// 세 파일을 저장하고 폴더 경로를 돌려줌
+// 네 파일을 저장하고 폴더 경로를 돌려줌
 export function saveRun(record: RunRecord, root: string = DEFAULT_RESULTS_ROOT): string {
   const dir = createRunDir(root, `${timestampForDir(record.startedAt)}-${record.name}`)
   const settings = {
@@ -195,6 +228,7 @@ export function saveRun(record: RunRecord, root: string = DEFAULT_RESULTS_ROOT):
   }
   writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(settings, null, 2) + '\n')
   writeFileSync(path.join(dir, 'samples.csv'), samplesCsv(record.logs.flatMap((log) => log.samples())))
+  writeFileSync(path.join(dir, 'reconnects.csv'), reconnectsCsv(record.reconnects))
   writeFileSync(path.join(dir, 'summary.csv'), summaryCsv(record))
   return dir
 }
