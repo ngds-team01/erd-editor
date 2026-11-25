@@ -1,4 +1,4 @@
-// 결과 파일(settings.json, samples.csv, reconnects.csv, summary.csv) 형식 확인, 임시 폴더에 저장해 봄
+// 결과 파일(settings.json, samples.csv, reconnects.csv, restore.csv, summary.csv) 형식 확인, 임시 폴더에 저장해 봄
 // 실행: npm test
 import assert from 'node:assert/strict'
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
@@ -7,8 +7,8 @@ import path from 'node:path'
 import { describe, it } from 'node:test'
 import { createProbeLog } from './probe'
 import { createRandom } from './random'
-import { reconnectsCsv, samplesCsv, saveRun, summaryCsv, timestampForDir, toCsv } from './results'
-import type { RunRecord } from './results'
+import { reconnectsCsv, restoreCsv, samplesCsv, saveRun, summaryCsv, timestampForDir, toCsv } from './results'
+import type { RestoreRecord, RunRecord } from './results'
 import { percentile } from './stats'
 
 function record(overrides: Partial<RunRecord> = {}): RunRecord {
@@ -29,6 +29,8 @@ function record(overrides: Partial<RunRecord> = {}): RunRecord {
     logs: [],
     reconnects: [],
     reconnectPending: 0,
+    scenario: 'converge',
+    restore: null,
     ...overrides,
   }
 }
@@ -149,13 +151,70 @@ describe('재접속 기록', () => {
     ])
   })
 
-  it('summary.csv 맨 뒤에 재접속 열, 끊김이 없으면 개수 0·백분위 빈칸', () => {
+  it('summary.csv에 재접속 열, 끊김이 없으면 개수 0·백분위 빈칸', () => {
     const rows = parseCsv(summaryCsv(record({ reconnects: [sample(1, 0, 1000), sample(2, 0, 3000)], reconnectPending: 1 })))
     const empty = parseCsv(summaryCsv(record()))
     assert.deepEqual(rows[0], empty[0])
-    assert.deepEqual(rows[0].slice(-5), ['reconnects', 'reconnect_pending', 'reconnect_p50_ms', 'reconnect_p95_ms', 'reconnect_max_ms'])
-    assert.deepEqual(rows[1].slice(-5), ['2', '1', '2000', '2900', '3000'])
-    assert.deepEqual(empty[1].slice(-5), ['0', '0', '', '', ''])
+    // 재접속 열 다섯 칸 (그 뒤에 복원 열이 이어짐)
+    const at = rows[0].indexOf('reconnects')
+    const pick = (row: string[]) => row.slice(at, at + 5)
+    assert.deepEqual(pick(rows[0]), ['reconnects', 'reconnect_pending', 'reconnect_p50_ms', 'reconnect_p95_ms', 'reconnect_max_ms'])
+    assert.deepEqual(pick(rows[1]), ['2', '1', '2000', '2900', '3000'])
+    assert.deepEqual(pick(empty[1]), ['0', '0', '', '', ''])
+  })
+})
+
+describe('복원 기록', () => {
+  // 클라이언트 11(봇 2)의 추가 3개와 클라이언트 99(부하 봇)의 삭제 1개가 빠진 복원
+  const restore: RestoreRecord = {
+    waitMs: 1500.4,
+    observerSyncMs: 812.3456,
+    hashMatch: false,
+    loss: {
+      missingInserts: 3,
+      missingDeletes: 1,
+      clients: [
+        { client: 11, expectedClock: 20, restoredClock: 17, expectedDeleted: 2, restoredDeleted: 2 },
+        { client: 99, expectedClock: 5, restoredClock: 5, expectedDeleted: 1, restoredDeleted: 0 },
+      ],
+    },
+    botByClient: new Map([[11, 2]]),
+  }
+
+  it('restore.csv는 빠진 클라이언트마다 한 줄, 이 프로세스의 봇이 아니면 bot 빈칸', () => {
+    assert.deepEqual(parseCsv(restoreCsv(restore)), [
+      ['client', 'bot', 'expected_clock', 'restored_clock', 'expected_deleted', 'restored_deleted'],
+      ['11', '2', '20', '17', '2', '2'],
+      ['99', '', '5', '5', '1', '0'],
+    ])
+  })
+
+  it('summary.csv 맨 뒤에 복원 열, converge 실행은 빈칸 (열 순서는 같음)', () => {
+    const rows = parseCsv(summaryCsv(record({ scenario: 'restore', restore })))
+    const converge = parseCsv(summaryCsv(record()))
+    assert.deepEqual(rows[0], converge[0])
+    const tail = [
+      'scenario',
+      'restore_wait_ms',
+      'restore_sync_ms',
+      'restore_hash_match',
+      'restore_missing_inserts',
+      'restore_missing_deletes',
+      'restore_missing_clients',
+    ]
+    assert.deepEqual(rows[0].slice(-7), tail)
+    assert.deepEqual(rows[1].slice(-7), ['restore', '1500', '812.346', 'false', '3', '1', '2'])
+    assert.deepEqual(converge[1].slice(-7), ['converge', '', '', '', '', '', ''])
+  })
+
+  it('restore 실행만 restore.csv를 만듦', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'loadtest-results-'))
+    try {
+      const dir = saveRun(record({ scenario: 'restore', restore }), root)
+      assert.ok(readdirSync(dir).includes('restore.csv'))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

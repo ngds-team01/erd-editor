@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import { createBot } from './bot'
 import type { Bot } from './bot'
@@ -9,10 +10,11 @@ import type { EventLoopSummary } from './eventLoop'
 import { startLoadProcess } from './loadProcess'
 import type { LoadProcess, LoadStats } from './loadProcess'
 import { getColumns, getRelations, getTables } from './model'
-import type * as Y from 'yjs'
+import * as Y from 'yjs'
 import {
   createProbeLog,
   ensureProbeTable,
+  probeNow,
   startAwarenessSender,
   startUpdateSender,
   watchAwareness,
@@ -20,7 +22,10 @@ import {
 } from './probe'
 import type { ProbeLog } from './probe'
 import type { ReconnectSample } from './reconnectTime'
+import { captureState, compareStates } from './restore'
+import type { DocState } from './restore'
 import { saveRun } from './results'
+import type { RestoreRecord } from './results'
 import { assertSingleYjs } from './singleYjs'
 import { summarize } from './stats'
 
@@ -28,6 +33,9 @@ import { summarize } from './stats'
 const DOC_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 // 결과 폴더 이름 형식 (--name)
 const RUN_NAME_PATTERN = /^[A-Za-z0-9_-]{1,40}$/
+// 실행 순서 (--scenario)
+const SCENARIOS = ['converge', 'restore'] as const
+type Scenario = (typeof SCENARIOS)[number]
 
 // 실행 인자를 읽어 검사, 예: npm run bot -- --bots 20 --duration 60
 // 모르는 인자(--bot 오타 등)나 잘못된 값이면 오류
@@ -63,8 +71,25 @@ function readOptions() {
       'receiver-url': { type: 'string' },
       // 결과 폴더 이름 뒤에 붙는 이름, 예: --name exp1-100bots → results/20261123-191502-exp1-100bots/
       name: { type: 'string', default: 'run' },
+      // 실행 순서: converge = 편집 → 수렴 확인 → 관찰자 확인 (기본)
+      //           restore = 편집 → 수렴 확인 → 봇 전부 종료 → 대기 → 관찰자가 서버 데이터만으로 복원한 문서 확인 (실험 2-b)
+      scenario: { type: 'string', default: 'converge' },
+      // restore에서 봇이 모두 나간 뒤 관찰자가 접속하기까지 기다리는 시간(초)
+      // 지정하지 않으면 Enter를 누를 때까지 기다림 (그동안 파드를 지우거나 스냅샷이 생기기를 기다림)
+      'restore-wait': { type: 'string' },
     },
   })
+
+  if (!SCENARIOS.includes(values.scenario as Scenario)) {
+    throw new Error(`--scenario 값은 ${SCENARIOS.join(', ')} 중 하나여야 합니다: ${values.scenario}`)
+  }
+  const scenario = values.scenario as Scenario
+  if (values['restore-wait'] !== undefined && scenario !== 'restore') {
+    throw new Error('--restore-wait은 --scenario restore와 함께 써야 합니다')
+  }
+  // 0초도 허용: 파드를 지우지 않고 문서 언로드만 확인할 때, 관찰자 접속 전 짧게 기다리는 것은 RESTORE_MIN_WAIT_MS가 맡음
+  const restoreWaitSec =
+    values['restore-wait'] === undefined ? null : nonNegativeNumber('restore-wait', values['restore-wait'])
 
   // 폴더 이름에 쓰므로 Windows·Linux 모두에서 문제없는 글자만 허용
   if (!RUN_NAME_PATTERN.test(values.name)) {
@@ -97,6 +122,8 @@ function readOptions() {
     probeIntervalMs: positiveNumber('probe-interval', values['probe-interval']),
     receiverUrl: values['receiver-url'] ?? values.url,
     name: values.name,
+    scenario,
+    restoreWaitSec,
   }
 }
 
@@ -110,6 +137,10 @@ try {
 }
 // 봇 1개가 서버와 첫 동기화를 끝내야 하는 시간
 const SYNC_TIMEOUT_MS = 10_000
+// restore에서 관찰자가 동기화를 끝내야 하는 시간: 파드를 전부 지웠으면 새 파드가 뜰 때까지 재접속을 반복함
+const RESTORE_SYNC_TIMEOUT_MS = 60_000
+// restore에서 봇이 모두 나간 뒤 관찰자가 접속하기 전 최소 대기, --restore-wait 0이어도 이만큼은 기다림
+const RESTORE_MIN_WAIT_MS = 1_000
 // 편집 중 진행 상황을 출력하는 간격
 const PROGRESS_INTERVAL_MS = 5_000
 // 해시 출력 길이, 64자 전부는 길어 앞부분만 표시
@@ -207,7 +238,20 @@ async function main(): Promise<boolean> {
     const reconnectPending = everyBot.reduce((sum, bot) => sum + bot.reconnects.pending(), 0)
     printReconnects(reconnects, reconnectPending)
 
-    // 5. 관찰자 확인: 봇끼리만 같고 서버는 다를 수 있으므로, 새로 접속한 클라이언트가 받는 상태도 비교
+    // 5-1. (restore) 봇이 가진 상태를 적어 두고 전부 내보낸 뒤 기다림
+    // 봇끼리 수렴하지 않았으면 기대 상태를 하나로 정할 수 없으므로 건너뛰고 converge처럼 확인 (결과는 FAIL)
+    let leave: LeaveResult | null = null
+    if (options.scenario === 'restore') {
+      if (result.converged) {
+        leave = await leaveAll(everyBot, botDocs)
+      } else {
+        console.log('봇끼리 수렴하지 않아 전원 이탈 단계를 건너뜁니다')
+      }
+    }
+
+    // 5-2. 관찰자 확인: 봇끼리만 같고 서버는 다를 수 있으므로, 새로 접속한 클라이언트가 받는 상태도 비교
+    // restore에서는 봇이 모두 나간 뒤라, 관찰자가 받는 문서는 서버가 스냅샷 + Streams로 복원한 것
+    const observerStartedAt = probeNow()
     observer = createBot({
       url: options.url,
       docId: options.docId,
@@ -215,10 +259,28 @@ async function main(): Promise<boolean> {
       seed: options.seed,
       rate: options.rate,
     })
-    await observer.waitSynced(SYNC_TIMEOUT_MS)
+    // restore에서 파드를 전부 지웠으면 새 파드가 뜰 때까지 재접속하므로 더 오래 기다림
+    await observer.waitSynced(leave ? RESTORE_SYNC_TIMEOUT_MS : SYNC_TIMEOUT_MS)
+    // 접속부터 동기화까지, 서버가 문서를 복원하는 시간이 들어감 (서버는 복원을 마친 뒤 SyncStep1에 답함, contracts 6.4)
+    const observerSyncMs = probeNow() - observerStartedAt
+    // restore에서도 botDocs는 그대로 비교에 씀: 봇은 접속만 끊었고 Y.Doc은 나가기 전 상태로 메모리에 남아 있음
     const groups = await groupByHash([...botDocs, { name: '관찰자', doc: observer.doc }])
 
-    const passed = result.converged && groups.length === 1
+    let restore: RestoreRecord | null = null
+    if (leave) {
+      restore = {
+        waitMs: leave.waitMs,
+        observerSyncMs,
+        hashMatch: groups.length === 1,
+        loss: compareStates(leave.expected, captureState(observer.doc)),
+        botByClient: leave.botByClient,
+      }
+      printRestore(restore)
+    }
+
+    const lost = restore !== null && (restore.loss.missingInserts > 0 || restore.loss.missingDeletes > 0)
+    // restore를 골랐는데 이탈 단계를 건너뛰었으면 복원을 확인하지 못했으므로 PASS가 아님 (수렴 실패라 이미 false)
+    const passed = result.converged && groups.length === 1 && !lost
     printResult(passed, result.elapsedMs, groups)
 
     // 6. 결과 저장: PASS든 FAIL이든 남김 (FAIL 원인을 나중에 볼 수 있게)
@@ -240,6 +302,8 @@ async function main(): Promise<boolean> {
       logs: probe ? [probe.updateLog, probe.awarenessLog] : [],
       reconnects,
       reconnectPending,
+      scenario: options.scenario,
+      restore,
     })
     console.log(`결과 저장 · ${path.relative(process.cwd(), dir)}`)
     return passed
@@ -370,6 +434,75 @@ function printLatency(log: ProbeLog): void {
   console.log(`  p50 ${ms(summary.p50)} · p95 ${ms(summary.p95)} · p99 ${ms(summary.p99)} · 최대 ${ms(summary.max)}`)
 }
 
+// 전원 이탈 단계의 결과: 나가기 전 상태와 실제로 기다린 시간
+type LeaveResult = {
+  expected: DocState
+  waitMs: number
+  // Y.Doc clientID → 봇 번호, 빠진 연산이 어느 봇의 편집인지 restore.csv에 남기기 위함 (부하 봇은 이 프로세스에 없어 빠짐)
+  botByClient: Map<number, number>
+}
+
+// 봇 문서를 합쳐 기대 상태를 적고, 봇을 모두 내보낸 뒤 --restore-wait만큼(또는 Enter까지) 기다림
+async function leaveAll(bots: Bot[], docs: NamedDoc[]): Promise<LeaveResult> {
+  // 봇 문서를 모두 합친 상태 = 나가기 전 클라이언트 쪽에 있던 편집 전부 (수렴했으므로 어느 봇 하나와도 같음)
+  // 부하 봇의 편집도 정식 봇이 받아 두었으므로 여기에 들어감
+  const merged = new Y.Doc()
+  for (const { doc } of docs) {
+    Y.applyUpdate(merged, Y.encodeStateAsUpdate(doc))
+  }
+  const expected = captureState(merged)
+  merged.destroy()
+  const botByClient = new Map(bots.map((bot) => [bot.doc.clientID, bot.index]))
+
+  // 접속만 끊음, 각 봇의 Y.Doc은 남아 관찰자와 해시를 비교할 때 씀
+  bots.forEach((bot) => bot.destroy())
+  const leftAt = Date.now()
+  console.log(`봇 ${bots.length}개 모두 종료 · 기대 상태 저장 (편집한 클라이언트 ${expected.clocks.size}개)`)
+  if (options.restoreWaitSec === null) {
+    await waitForEnter('파드를 지우거나 스냅샷이 생기기를 기다린 뒤 Enter를 누르면 관찰자가 접속합니다')
+  } else {
+    console.log(`${options.restoreWaitSec}초 기다린 뒤 관찰자가 접속합니다`)
+    await sleep(options.restoreWaitSec * 1000)
+  }
+  // 서버가 마지막 연결 종료를 처리해 Streams flush → 메모리에서 문서 제거(contracts 5.3-6)를 마칠 시간
+  // 이보다 빨리 붙으면 문서가 아직 메모리에 있어 복원을 거치지 않음
+  const remaining = RESTORE_MIN_WAIT_MS - (Date.now() - leftAt)
+  if (remaining > 0) {
+    await sleep(remaining)
+  }
+  return { expected, waitMs: Date.now() - leftAt, botByClient }
+}
+
+// Enter를 누를 때까지 대기
+async function waitForEnter(message: string): Promise<void> {
+  const prompt = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    await prompt.question(`${message} `)
+  } finally {
+    prompt.close()
+  }
+}
+
+// 복원 결과 출력: 대기 시간, 관찰자 동기화 시간, 해시, 빠진 연산 수와 빠진 클라이언트 (앞 10개)
+function printRestore(restore: RestoreRecord): void {
+  const { loss } = restore
+  console.log(
+    `복원 · 대기 ${(restore.waitMs / 1000).toFixed(1)}초 · 관찰자 동기화 ${Math.round(restore.observerSyncMs)}ms · ` +
+      `해시 ${restore.hashMatch ? '같음' : '다름'} · 빠진 추가 ${loss.missingInserts}개 · 빠진 삭제 ${loss.missingDeletes}개`,
+  )
+  for (const client of loss.clients.slice(0, 10)) {
+    const bot = restore.botByClient.get(client.client)
+    console.log(
+      `  클라이언트 ${client.client}${bot === undefined ? '' : ` (봇 ${bot})`} · ` +
+        `항목 ${client.expectedClock} → ${client.restoredClock} · 삭제 ${client.expectedDeleted} → ${client.restoredDeleted}`,
+    )
+  }
+  if (!restore.hashMatch && loss.clients.length === 0) {
+    // 복원 쪽에만 있는 편집이 있다는 뜻 (이탈 뒤 다른 클라이언트가 같은 문서를 편집했는지 확인)
+    console.log('  해시는 다르지만 빠진 연산은 없음: 봇이 나간 뒤 같은 문서를 편집한 클라이언트가 있는지 확인')
+  }
+}
+
 // 재접속 시간 요약 출력: 끊김이 없었으면 출력하지 않음
 // 아직 동기화되지 않은 봇이 있으면 그 수도 출력 (끝까지 복구하지 못한 봇이라 시간 기록에는 빠짐)
 function printReconnects(samples: readonly ReconnectSample[], pending: number): void {
@@ -442,6 +575,15 @@ function positiveNumber(name: string, raw: string): number {
   const value = Number(raw)
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`--${name} 값은 0보다 큰 숫자여야 합니다: ${raw}`)
+  }
+  return value
+}
+
+// 대기 시간처럼 0도 되는 값
+function nonNegativeNumber(name: string, raw: string): number {
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`--${name} 값은 0 이상의 숫자여야 합니다: ${raw}`)
   }
   return value
 }

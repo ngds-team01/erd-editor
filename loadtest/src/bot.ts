@@ -102,6 +102,7 @@ export function createBot(options: BotOptions): Bot {
       stats.updatesSent += 1
     }
   })
+  let destroyed = false
   provider.on('status', ({ status }) => {
     if (status === 'disconnected') {
       stats.disconnects += 1
@@ -139,6 +140,11 @@ export function createBot(options: BotOptions): Bot {
     stop: editLoop.stop,
     // 재접속 대기 중에 끝내면 걸어 둔 타이머가 닫은 봇을 다시 접속시키므로 먼저 취소
     destroy: () => {
+      // restore에서 봇을 먼저 내보낸 뒤 index.ts의 finally가 다시 부르므로, 두 번째부터는 아무 일도 하지 않음
+      if (destroyed) {
+        return
+      }
+      destroyed = true
       // 오류로 중간에 끝날 때는 stop 없이 불리므로, 닫은 문서를 계속 편집하지 않게 반복도 멈춤
       void editLoop.stop()
       reconnector.cancel()

@@ -1,8 +1,9 @@
 // 실행 결과를 파일로 저장 (제안서: 원본 CSV · 커밋 SHA · 설정을 함께 보관)
-// 실행마다 results/{날짜-시각}-{이름}/ 폴더에 네 파일을 만듦
+// 실행마다 results/{날짜-시각}-{이름}/ 폴더에 네 파일(restore 실행은 다섯 파일)을 만듦
 //   settings.json:  무엇으로 돌렸나 (인자, seed, 서버 주소, 커밋 SHA, 시작·종료 시각)
 //   samples.csv:    지연 측정값 원본, 한 줄에 하나
 //   reconnects.csv: 재접속 기록 원본, 끊김 한 번에 한 줄
+//   restore.csv:    (--scenario restore만) 연산이 빠진 클라이언트, 한 줄에 하나, 빠진 것이 없으면 헤더만
 //   summary.csv:    이 실행의 요약 한 줄, 열 순서가 항상 같아 여러 실행의 줄을 이어 붙여 비교할 수 있음
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -12,6 +13,7 @@ import type { EventLoopSummary } from './eventLoop'
 import type { LoadStats } from './loadProcess'
 import type { ProbeLog, ProbePath, ProbeSample } from './probe'
 import type { ReconnectSample } from './reconnectTime'
+import type { LossReport } from './restore'
 import { summarize } from './stats'
 
 // 기본 저장 위치: loadtest/results (이 파일 기준 ../results), .gitignore로 git에는 올리지 않음
@@ -51,6 +53,23 @@ export type RunRecord = {
   reconnects: ReconnectSample[]
   // 실행이 끝날 때까지 다시 동기화되지 않은 봇 수
   reconnectPending: number
+  // 실행 순서 (--scenario), converge 또는 restore
+  scenario: string
+  // 전원 이탈 후 복원 결과, converge이거나 봇끼리 수렴하지 않아 이탈 단계를 건너뛰었으면 null
+  restore: RestoreRecord | null
+}
+
+// 전원 이탈 후 복원 결과 (실험 2-b)
+export type RestoreRecord = {
+  // 봇이 모두 나간 뒤 관찰자가 접속하기까지 실제로 기다린 시간
+  waitMs: number
+  // 관찰자 접속부터 동기화까지, 서버가 문서를 복원한 시간이 들어감
+  observerSyncMs: number
+  // 나가기 전 봇 문서들과 관찰자 문서의 해시가 같은지
+  hashMatch: boolean
+  loss: LossReport
+  // Y.Doc clientID → 봇 번호 (이 프로세스의 봇만)
+  botByClient: Map<number, number>
 }
 
 // 폴더 이름용 날짜-시각, 이 컴퓨터 시간대 기준 (예: 20261123-191502)
@@ -104,6 +123,22 @@ export function reconnectsCsv(samples: readonly ReconnectSample[]): string {
   )
 }
 
+// restore.csv: 연산이 빠진 클라이언트마다 한 줄, 기대 값(나가기 전)과 복원 값(관찰자)을 나란히 둠
+// bot은 이 프로세스의 봇일 때만 채움 (부하 봇의 클라이언트는 빈칸)
+export function restoreCsv(restore: RestoreRecord): string {
+  return toCsv(
+    ['client', 'bot', 'expected_clock', 'restored_clock', 'expected_deleted', 'restored_deleted'],
+    restore.loss.clients.map((client) => [
+      client.client,
+      restore.botByClient.get(client.client) ?? null,
+      client.expectedClock,
+      client.restoredClock,
+      client.expectedDeleted,
+      client.restoredDeleted,
+    ]),
+  )
+}
+
 // summary.csv: 헤더 한 줄 + 이 실행의 값 한 줄
 export function summaryCsv(record: RunRecord): string {
   const columns: [string, Cell][] = [
@@ -150,6 +185,17 @@ export function summaryCsv(record: RunRecord): string {
     ['reconnect_p50_ms', ms(reconnect.p50)],
     ['reconnect_p95_ms', ms(reconnect.p95)],
     ['reconnect_max_ms', ms(reconnect.max)],
+  )
+  // 복원 열도 맨 뒤에, converge 실행은 빈칸
+  const restore = record.restore
+  columns.push(
+    ['scenario', record.scenario],
+    ['restore_wait_ms', restore ? Math.round(restore.waitMs) : null],
+    ['restore_sync_ms', restore ? ms(restore.observerSyncMs) : null],
+    ['restore_hash_match', restore ? restore.hashMatch : null],
+    ['restore_missing_inserts', restore ? restore.loss.missingInserts : null],
+    ['restore_missing_deletes', restore ? restore.loss.missingDeletes : null],
+    ['restore_missing_clients', restore ? restore.loss.clients.length : null],
   )
   return toCsv(
     columns.map(([header]) => header),
@@ -213,7 +259,7 @@ function createRunDir(root: string, base: string): string {
   }
 }
 
-// 네 파일을 저장하고 폴더 경로를 돌려줌
+// 파일을 저장하고 폴더 경로를 돌려줌
 export function saveRun(record: RunRecord, root: string = DEFAULT_RESULTS_ROOT): string {
   const dir = createRunDir(root, `${timestampForDir(record.startedAt)}-${record.name}`)
   const settings = {
@@ -229,6 +275,9 @@ export function saveRun(record: RunRecord, root: string = DEFAULT_RESULTS_ROOT):
   writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(settings, null, 2) + '\n')
   writeFileSync(path.join(dir, 'samples.csv'), samplesCsv(record.logs.flatMap((log) => log.samples())))
   writeFileSync(path.join(dir, 'reconnects.csv'), reconnectsCsv(record.reconnects))
+  if (record.restore) {
+    writeFileSync(path.join(dir, 'restore.csv'), restoreCsv(record.restore))
+  }
   writeFileSync(path.join(dir, 'summary.csv'), summaryCsv(record))
   return dir
 }
