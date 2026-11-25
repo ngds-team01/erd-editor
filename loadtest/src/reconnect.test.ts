@@ -89,6 +89,19 @@ describe('attachReconnect', () => {
     )
   })
 
+  it('한 번도 동기화하지 못한 채 닫히면 beforeFirstSync, 동기화한 뒤의 끊김은 아님', () => {
+    const fake = fakeProvider()
+    const flags: boolean[] = []
+    attachReconnect(fake.provider, (event) => event.kind === 'retry' && flags.push(event.beforeFirstSync), noJitter)
+
+    // 서버가 꺼져 있어 접속 실패 두 번 → 붙어서 동기화 → 끊김
+    fake.close(CLOSE_ABNORMAL)
+    fake.close(CLOSE_ABNORMAL)
+    fake.sync()
+    fake.close(CLOSE_ABNORMAL)
+    assert.deepEqual(flags, [true, true, false])
+  })
+
   it('4400이면 재접속하지 않고 stop을 알림', () => {
     const fake = fakeProvider()
     const events: ReconnectEvent[] = []

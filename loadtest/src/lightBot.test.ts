@@ -70,7 +70,8 @@ describe('createLightBot', () => {
 
     await bot.waitSynced(2000)
     await waitFor(() => getTables(server.doc).has(tableId))
-    assert.deepEqual(events, [{ kind: 'retry', code: 1012, delayMs: 0, attempt: 0 }])
+    // 동기화한 뒤에 닫혔으므로 접속 실패가 아닌 끊김
+    assert.deepEqual(events, [{ kind: 'retry', code: 1012, delayMs: 0, attempt: 0, beforeFirstSync: false }])
   })
 
   it('편집 반복: 한도 안에서 자기 테이블만 만들어 편집하고, 편집 대상을 awareness에 올림', async () => {

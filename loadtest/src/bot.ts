@@ -8,6 +8,8 @@ import { createUser, initPresence } from './presence'
 import type { PresenceUser } from './presence'
 import { createRandom } from './random'
 import { attachReconnect } from './reconnect'
+import { trackReconnects } from './reconnectTime'
+import type { ReconnectLog } from './reconnectTime'
 
 // 이름·색용 시드를 편집용 시드(seed + 봇 번호)와 겹치지 않게 띄우는 값, 봇 수가 이보다 적으면 겹치지 않음
 const USER_SEED_OFFSET = 1_000_000
@@ -46,6 +48,8 @@ export type Bot = {
   // provider가 만든 awareness, 지연 측정(probe.ts)이 편집 중 표시 경로를 잴 때 사용
   awareness: WebsocketProvider['awareness']
   stats: BotStats
+  // 끊길 때마다 다시 동기화되기까지 걸린 시간 (실험 2-a)
+  reconnects: ReconnectLog
   // 서버와 첫 동기화가 끝날 때까지 대기, timeoutMs 안에 안 끝나면 오류
   waitSynced: (timeoutMs: number) => Promise<void>
   // 편집 반복 시작
@@ -73,8 +77,16 @@ export function createBot(options: BotOptions): Bot {
       console.error(`봇 ${index}: 서버가 문서 주소를 거부해 재접속하지 않습니다 (code ${event.code})`)
       return
     }
+    // 한 번도 동기화하지 못한 채 닫혔으면 '접속 실패' (서버가 꺼져 있거나 주소가 틀림)
+    const what = event.beforeFirstSync ? '접속 실패' : '끊김'
     console.log(
-      `봇 ${index}: 끊김 (code ${event.code}) → ${Math.round(event.delayMs)}ms 뒤 재접속 (연속 실패 ${event.attempt}회)`,
+      `봇 ${index}: ${what} (code ${event.code}) → ${Math.round(event.delayMs)}ms 뒤 재접속 (연속 실패 ${event.attempt}회)`,
+    )
+  })
+  // 위 '끊김' 줄과 짝이 되는 줄, 끊긴 뒤 다시 동기화될 때까지 걸린 시간을 출력
+  const reconnects = trackReconnects(provider, index, (sample) => {
+    console.log(
+      `봇 ${index}: 다시 동기화 (끊긴 지 ${Math.round(sample.durationMs)}ms, 실패한 재접속 ${sample.failedAttempts}회)`,
     )
   })
   // 봇마다 시드를 다르게 해서 서로 다른 편집을 하게 함
@@ -92,8 +104,10 @@ export function createBot(options: BotOptions): Bot {
       stats.updatesSent += 1
     }
   })
+  let destroyed = false
   provider.on('status', ({ status }) => {
-    if (status === 'disconnected') {
+    // destroy()로 일부러 접속을 끊을 때도 'disconnected'가 오므로 세지 않음 (restore에서 봇을 내보낼 때)
+    if (status === 'disconnected' && !destroyed) {
       stats.disconnects += 1
     }
   })
@@ -103,6 +117,7 @@ export function createBot(options: BotOptions): Bot {
     doc,
     awareness: provider.awareness,
     stats,
+    reconnects,
     //Bot 동기화 대기
     waitSynced: (timeoutMs) =>
       new Promise((resolve, reject) => {
@@ -128,10 +143,18 @@ export function createBot(options: BotOptions): Bot {
     stop: editLoop.stop,
     // 재접속 대기 중에 끝내면 걸어 둔 타이머가 닫은 봇을 다시 접속시키므로 먼저 취소
     destroy: () => {
+      // restore에서 봇을 먼저 내보낸 뒤 index.ts의 finally가 다시 부르므로, 두 번째부터는 아무 일도 하지 않음
+      if (destroyed) {
+        return
+      }
+      destroyed = true
       // 오류로 중간에 끝날 때는 stop 없이 불리므로, 닫은 문서를 계속 편집하지 않게 반복도 멈춤
       void editLoop.stop()
       reconnector.cancel()
       provider.destroy()
+      // provider.destroy()는 awareness의 점검 타이머(setInterval)를 끄지 않아, 그대로 두면 프로세스가 끝나지 않음
+      // (실행은 process.exit로 끝나 드러나지 않지만, 봇을 쓰는 테스트는 끝나지 않고 멈춤)
+      provider.awareness.destroy()
     },
   }
 }
