@@ -1,25 +1,16 @@
 import path from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
-import { createBot } from './bot'
 import type { Bot } from './bot'
 import { firstDifference, groupByHash, waitForConvergence } from './converge'
 import type { HashGroup, NamedDoc } from './converge'
+import { createDocGroup } from './docGroup'
 import { startEventLoopMonitor } from './eventLoop'
 import type { EventLoopSummary } from './eventLoop'
 import { startLoadProcess } from './loadProcess'
 import type { LoadProcess, LoadStats } from './loadProcess'
 import { getColumns, getRelations, getTables } from './model'
 import * as Y from 'yjs'
-import {
-  createProbeLog,
-  ensureProbeTable,
-  probeNow,
-  startAwarenessSender,
-  startUpdateSender,
-  watchAwareness,
-  watchUpdates,
-} from './probe'
 import type { ProbeLog } from './probe'
 import type { ReconnectSample } from './reconnectTime'
 import { captureState, compareStates } from './restore'
@@ -168,34 +159,31 @@ async function main(): Promise<boolean> {
   process.setMaxListeners(options.bots + 13)
 
   // 1. 봇을 ramp 간격으로 하나씩 접속시키고, 모두 첫 동기화가 끝날 때까지 대기
-  const bots: Bot[] = []
-  // 편집이 끝난 뒤 새로 접속해 서버가 가진 상태를 받아오는 봇, 편집은 하지 않음
-  let observer: Bot | null = null
-  // 지연 측정용 봇 (--probe), 무작위 편집은 하지 않고 수렴 확인에는 포함
-  let probe: ProbeBots | null = null
-  for (let index = 0; index < options.bots; index += 1) {
-    bots.push(createBot({ url: options.url, docId: options.docId, index, seed: options.seed, rate: options.rate }))
-    await sleep(options.rampMs)
-  }
-  if (options.probe) {
-    probe = createProbeBots()
-  }
+  // 문서 하나에 딸린 봇 묶음: 편집하는 봇 + 지연 측정 봇(--probe) + 나중에 붙는 관찰자 (docGroup.ts)
+  const group = await createDocGroup({
+    url: options.url,
+    receiverUrl: options.receiverUrl,
+    docId: options.docId,
+    firstIndex: 0,
+    bots: options.bots,
+    seed: options.seed,
+    rate: options.rate,
+    rampMs: options.rampMs,
+    probe: options.probe,
+    probeIntervalMs: options.probeIntervalMs,
+  })
+  const { bots, probe, everyBot } = group
   // 부하 프로세스: 부하 봇을 나눠 맡겨 띄움, 각 프로세스 안에서 봇이 ramp 간격으로 접속
-  const loads = startLoadProcesses()
-  // 수렴 확인·종료를 함께 할 봇 전부 (부하 봇은 다른 사람의 편집을 반영하지 않아 수렴 확인에서 뺌)
-  const everyBot = probe ? [...bots, probe.sender, probe.receiver] : bots
+  // 봇 번호는 묶음 다음 번호부터 (부하 봇은 다른 사람의 편집을 반영하지 않아 수렴 확인에서 뺌)
+  const loads = startLoadProcesses(group.nextIndex)
   try {
-    await Promise.all([
-      ...everyBot.map((bot) => bot.waitSynced(SYNC_TIMEOUT_MS)),
-      ...loads.map((load) => load.ready),
-    ])
+    await Promise.all([group.waitSynced(SYNC_TIMEOUT_MS), ...loads.map((load) => load.ready)])
     console.log(`봇 ${everyBot.length}개${loadLabel} 동기화 완료, 편집 시작`)
 
     // 2. 정해진 시간 동안 편집 (지연 측정을 켰으면 측정용 변경도 함께 보냄)
     // 측정 표본이 모이는 편집 구간 동안 봇 프로세스가 얼마나 바빴는지 함께 기록
     const stopEventLoopMonitor = startEventLoopMonitor()
-    probe?.start()
-    bots.forEach((bot) => bot.start())
+    group.start()
     loads.forEach((load) => load.start())
     const startedAt = Date.now()
     const progress = setInterval(() => {
@@ -206,11 +194,7 @@ async function main(): Promise<boolean> {
     clearInterval(progress)
 
     // 3. 편집 멈춤 (진행 중인 드래그는 끝까지), 부하 프로세스는 멈춘 뒤 통계를 보내고 스스로 끝남
-    probe?.stopSending()
-    const [loadStats] = await Promise.all([
-      Promise.all(loads.map((load) => load.stop())),
-      Promise.all(bots.map((bot) => bot.stop())),
-    ])
+    const [, loadStats] = await Promise.all([group.stop(), Promise.all(loads.map((load) => load.stop()))])
     // 수렴 확인은 해시 계산으로 일부러 바쁜 구간이라 빼고, 편집 구간만 요약
     const eventLoop = stopEventLoopMonitor()
     printSummary(bots)
@@ -221,15 +205,11 @@ async function main(): Promise<boolean> {
 
     // 4. 봇끼리 수렴 확인: 아직 서버를 오가는 변경이 있으므로 같아질 때까지 기다림
     console.log(`수렴 확인 중 (최대 ${options.settleSec}초)`)
-    const botDocs: NamedDoc[] = bots.map((bot) => ({ name: `봇 ${bot.index}`, doc: bot.doc }))
-    if (probe) {
-      botDocs.push({ name: '보내는 봇', doc: probe.sender.doc }, { name: '받는 봇', doc: probe.receiver.doc })
-    }
-    const result = await waitForConvergence(botDocs, options.settleSec * 1000)
+    const result = await waitForConvergence(group.docs, options.settleSec * 1000)
 
     // 수렴을 기다리는 동안 늦게 온 측정용 변경까지 받았으므로, 여기서 측정을 마치고 지연 출력
+    group.stopWatching()
     if (probe) {
-      probe.stopWatching()
       printLatency(probe.updateLog)
       printLatency(probe.awarenessLog)
     }
@@ -243,7 +223,7 @@ async function main(): Promise<boolean> {
     let leave: LeaveResult | null = null
     if (options.scenario === 'restore') {
       if (result.converged) {
-        leave = await leaveAll(everyBot, botDocs)
+        leave = await leaveAll(everyBot, group.docs)
       } else {
         console.log('봇끼리 수렴하지 않아 전원 이탈 단계를 건너뜁니다')
       }
@@ -251,20 +231,13 @@ async function main(): Promise<boolean> {
 
     // 5-2. 관찰자 확인: 봇끼리만 같고 서버는 다를 수 있으므로, 새로 접속한 클라이언트가 받는 상태도 비교
     // restore에서는 봇이 모두 나간 뒤라, 관찰자가 받는 문서는 서버가 스냅샷 + Streams로 복원한 것
-    const observerStartedAt = probeNow()
-    observer = createBot({
-      url: options.url,
-      docId: options.docId,
-      index: options.bots + 2,
-      seed: options.seed,
-      rate: options.rate,
-    })
     // restore에서 파드를 전부 지웠으면 새 파드가 뜰 때까지 재접속하므로 더 오래 기다림
-    await observer.waitSynced(leave ? RESTORE_SYNC_TIMEOUT_MS : SYNC_TIMEOUT_MS)
-    // 접속부터 동기화까지, 서버가 문서를 복원하는 시간이 들어감 (서버는 복원을 마친 뒤 SyncStep1에 답함, contracts 6.4)
-    const observerSyncMs = probeNow() - observerStartedAt
-    // restore에서도 botDocs는 그대로 비교에 씀: 봇은 접속만 끊었고 Y.Doc은 나가기 전 상태로 메모리에 남아 있음
-    const groups = await groupByHash([...botDocs, { name: '관찰자', doc: observer.doc }])
+    // syncMs: 접속부터 동기화까지, 서버가 문서를 복원하는 시간이 들어감 (서버는 복원을 마친 뒤 SyncStep1에 답함, contracts 6.4)
+    const { observer, syncMs: observerSyncMs } = await group.connectObserver(
+      leave ? RESTORE_SYNC_TIMEOUT_MS : SYNC_TIMEOUT_MS,
+    )
+    // restore에서도 봇 문서는 그대로 비교에 씀: 봇은 접속만 끊었고 Y.Doc은 나가기 전 상태로 메모리에 남아 있음
+    const groups = await groupByHash([...group.docs, { name: '관찰자', doc: observer.doc }])
 
     let restore: RestoreRecord | null = null
     if (leave) {
@@ -308,23 +281,21 @@ async function main(): Promise<boolean> {
     console.log(`결과 저장 · ${path.relative(process.cwd(), dir)}`)
     return passed
   } finally {
-    probe?.stopSending()
-    probe?.stopWatching()
-    everyBot.forEach((bot) => bot.destroy())
+    // 측정을 멈추고 관찰자까지 접속을 끊음 (restore에서 이미 내보낸 봇은 그대로 둠)
+    group.destroy()
     // 정상 흐름이면 이미 끝났으므로 아무 일도 없음, 오류로 중간에 끝날 때 남은 부하 프로세스를 정리
     loads.forEach((load) => load.kill())
-    observer?.destroy()
   }
 }
 
 // 부하 봇을 프로세스 수만큼 고르게 나눠 띄움 (예: 93개 · 3개 → 31개씩)
-// 봇 번호는 관찰자(bots + 2) 다음부터 이어서 써서 정식 봇·측정 봇과 시드·이름이 겹치지 않게 함
-function startLoadProcesses(): LoadProcess[] {
+// 봇 번호는 startIndex(묶음의 관찰자 다음)부터 이어서 써서 정식 봇·측정 봇과 시드·이름이 겹치지 않게 함
+function startLoadProcesses(startIndex: number): LoadProcess[] {
   const loads: LoadProcess[] = []
   if (options.loadBots === 0) {
     return loads
   }
-  let firstIndex = options.bots + 3
+  let firstIndex = startIndex
   for (let slot = 0; slot < options.loadProcesses; slot += 1) {
     // 나머지는 앞 프로세스부터 하나씩 더 맡김 (예: 10개 · 3개 → 4, 3, 3)
     const count =
@@ -360,59 +331,6 @@ function printLoadSummary(stats: LoadStats[]): void {
     const busy = loop ? `바쁜 시간 ${(loop.utilization * 100).toFixed(1)}% · 타이머 지연 최대 ${loop.lagMaxMs.toFixed(1)}ms` : '기록 없음'
     console.log(`  부하 프로세스 ${index + 1} · 봇 ${stat.bots}개 · 편집 ${actions(stat)}회 · ${busy}`)
   })
-}
-
-// 지연 측정용 봇 두 개와 그 기록
-type ProbeBots = {
-  // --url(HAProxy)로 붙어 측정용 변경을 보내는 봇
-  sender: Bot
-  // --receiver-url로 붙어 받은 시각을 기록하는 봇, 다른 파드에 붙이면 Redis를 거치는 SHARED 경로를 잼
-  receiver: Bot
-  updateLog: ProbeLog
-  awarenessLog: ProbeLog
-  // 측정용 테이블을 준비하고 두 경로(update·awareness)의 보내기·받기를 시작
-  start: () => void
-  stopSending: () => void
-  stopWatching: () => void
-}
-
-// 봇 번호는 일반 봇 다음 번호를 씀 (보내는 봇 = bots, 받는 봇 = bots + 1, 관찰자 = bots + 2)
-function createProbeBots(): ProbeBots {
-  const common = { docId: options.docId, seed: options.seed, rate: options.rate }
-  const sender = createBot({ ...common, url: options.url, index: options.bots })
-  const receiver = createBot({ ...common, url: options.receiverUrl, index: options.bots + 1 })
-  // 경로마다 기록장을 따로 둠, 순번도 경로마다 1부터 셈
-  const updateLog = createProbeLog('update')
-  const awarenessLog = createProbeLog('awareness')
-  console.log(
-    `지연 측정 · ${options.probeIntervalMs}ms마다 · 보내는 봇(봇 ${sender.index}) ${options.url} → 받는 봇(봇 ${receiver.index}) ${options.receiverUrl}`,
-  )
-  // 멈추는 함수 모음, 시작 전이면 비어 있어 멈춰도 아무 일도 없음
-  let senderStops: (() => void)[] = []
-  let watcherStops: (() => void)[] = []
-
-  return {
-    sender,
-    receiver,
-    updateLog,
-    awarenessLog,
-    start: () => {
-      // 보내는 봇 문서에 측정용 테이블을 만듦, 받는 봇에는 이 생성이 먼저 도착한 뒤 이름 변경이 도착함
-      const tableId = ensureProbeTable(sender.doc)
-      // 받는 쪽을 먼저 붙여 첫 순번부터 기록
-      watcherStops = [
-        watchUpdates(receiver.doc, tableId, updateLog),
-        // awareness의 clientID = 그 봇 Y.Doc의 clientID, 받는 봇은 이 번호로 보내는 봇의 상태를 찾음
-        watchAwareness(receiver.awareness, sender.awareness.clientID, awarenessLog),
-      ]
-      senderStops = [
-        startUpdateSender(sender.doc, tableId, updateLog, options.probeIntervalMs),
-        startAwarenessSender(sender.awareness, awarenessLog, options.probeIntervalMs),
-      ]
-    },
-    stopSending: () => senderStops.forEach((stop) => stop()),
-    stopWatching: () => watcherStops.forEach((stop) => stop()),
-  }
 }
 
 // 이벤트 루프 요약 출력: 바쁜 시간 비율과 타이머 지연
