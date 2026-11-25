@@ -61,10 +61,13 @@ spec:
               path: /readyz
               port: 8080
             periodSeconds: 5
+          # 편집 서버는 Node 스레드 하나라, 문서 하나에 사람이 몰리면 바빠서 /healthz에 늦게 답할 수 있음
+          # 바쁜 것뿐인데 재시작하면 모든 연결이 끊겨 한꺼번에 다시 붙으면서 더 바빠지므로, 약 1분(10초 × 6번) 응답이 없을 때만 재시작
+          # (100명 부하 측정에서 3초 × 3번 설정으로 두 파드가 모두 재시작됨, #55)
           livenessProbe:
             httpGet:
               path: /healthz
               port: 8080
             periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
+            timeoutSeconds: 5
+            failureThreshold: 6
