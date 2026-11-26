@@ -1,0 +1,33 @@
+$ npm run bot -- --url ws://localhost:8088/ws --doc exp2-restore-nosnap-20261126-104001-r2-3 --scenario restore --bots 20 --rate 1 --duration 60 --name exp2-nosnap-r2-3
+문서 exp2-restore-nosnap-20261126-104001-r2-3 · 봇 20개 · 60초 · 봇당 초당 1회 · seed 72805
+서버 ws://localhost:8088/ws
+봇 20개 동기화 완료, 편집 시작
+  5초 · 편집 102회
+  10초 · 편집 189회
+  15초 · 편집 277회
+  20초 · 편집 357회
+  25초 · 편집 446회
+  30초 · 편집 526회
+  35초 · 편집 612회
+  40초 · 편집 695회
+  45초 · 편집 779회
+  50초 · 편집 860회
+  55초 · 편집 950회
+편집 종료 · 편집 1039회 · 보낸 update 3689개 · 끊김 0회
+  drag            309
+  editColumn      225
+  addColumn       98
+  renameTable     88
+  moveColumn      76
+  createTable     70
+  createRelation  55
+  deleteColumn    45
+  deleteTable     42
+  recolorTable    31
+이벤트 루프 · 바쁜 시간 11.8% · 타이머 지연 p50 0.6ms · p99 1.7ms · 최대 10.3ms
+수렴 확인 중 (최대 30초)
+봇 20개 모두 종료 · 기대 상태 저장 (편집한 클라이언트 20개)
+파드를 지우거나 스냅샷이 생기기를 기다린 뒤 Enter를 누르면 관찰자가 접속합니다 복원 · 대기 6.7초 · 관찰자 동기화 161ms · 해시 같음 · 빠진 추가 0개 · 빠진 삭제 0개
+PASS · 편집 멈춤 후 0.0초 만에 봇 20개 + 관찰자 수렴 · hash fce7775a6484
+  최종 문서: 테이블 28개 · 컬럼 75개 · 관계 16개
+결과 저장 · results/20261126-105432-exp2-nosnap-r2-3

@@ -1,0 +1,3 @@
+kill-r1 results/20261126-121413-exp2-kill-r1
+kill-r2 results/20261126-122004-exp2-kill-r2
+kill-r3 results/20261126-122553-exp2-kill-r3

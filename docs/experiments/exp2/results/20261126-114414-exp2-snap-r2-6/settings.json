@@ -1,0 +1,46 @@
+{
+  "name": "exp2-snap-r2-6",
+  "argv": [
+    "--url",
+    "ws://localhost:8088/ws",
+    "--doc",
+    "exp2-restore-snap-20261126-111601-r2-6",
+    "--scenario",
+    "restore",
+    "--bots",
+    "20",
+    "--rate",
+    "1",
+    "--duration",
+    "60",
+    "--name",
+    "exp2-snap-r2-6"
+  ],
+  "options": {
+    "url": "ws://localhost:8088/ws",
+    "docId": "exp2-restore-snap-20261126-111601-r2-6",
+    "docs": 1,
+    "bots": 20,
+    "loadBots": 0,
+    "loadProcesses": 1,
+    "durationSec": 60,
+    "rate": 1,
+    "seed": 54857,
+    "rampMs": 100,
+    "settleSec": 30,
+    "probe": false,
+    "probeIntervalMs": 200,
+    "receiverUrl": "ws://localhost:8088/ws",
+    "name": "exp2-snap-r2-6",
+    "scenario": "restore",
+    "restoreWaitSec": null
+  },
+  "git": {
+    "commit": "78f0643816999737c66e97842d323d4e737bd1ff",
+    "dirty": true
+  },
+  "node": "v20.19.0",
+  "platform": "darwin",
+  "startedAt": "2026-11-26T02:44:14.860Z",
+  "finishedAt": "2026-11-26T02:46:10.380Z"
+}

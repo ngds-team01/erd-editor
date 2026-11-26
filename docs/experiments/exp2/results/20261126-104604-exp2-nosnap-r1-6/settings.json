@@ -1,0 +1,46 @@
+{
+  "name": "exp2-nosnap-r1-6",
+  "argv": [
+    "--url",
+    "ws://localhost:8088/ws",
+    "--doc",
+    "exp2-restore-nosnap-20261126-104001-r1-6",
+    "--scenario",
+    "restore",
+    "--bots",
+    "20",
+    "--rate",
+    "1",
+    "--duration",
+    "60",
+    "--name",
+    "exp2-nosnap-r1-6"
+  ],
+  "options": {
+    "url": "ws://localhost:8088/ws",
+    "docId": "exp2-restore-nosnap-20261126-104001-r1-6",
+    "docs": 1,
+    "bots": 20,
+    "loadBots": 0,
+    "loadProcesses": 1,
+    "durationSec": 60,
+    "rate": 1,
+    "seed": 564663,
+    "rampMs": 100,
+    "settleSec": 30,
+    "probe": false,
+    "probeIntervalMs": 200,
+    "receiverUrl": "ws://localhost:8088/ws",
+    "name": "exp2-nosnap-r1-6",
+    "scenario": "restore",
+    "restoreWaitSec": null
+  },
+  "git": {
+    "commit": "78f0643816999737c66e97842d323d4e737bd1ff",
+    "dirty": true
+  },
+  "node": "v20.19.0",
+  "platform": "darwin",
+  "startedAt": "2026-11-26T01:46:04.667Z",
+  "finishedAt": "2026-11-26T01:47:19.476Z"
+}
