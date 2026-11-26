@@ -1,2 +1,0 @@
-doc,bots,passed,converged,converge_ms,hash_groups,actions,updates_sent,disconnects,update_received,update_p95_ms,awareness_received,awareness_p95_ms,reconnects,reconnect_p95_ms,restore_sync_ms,restore_hash_match,restore_missing_inserts,restore_missing_deletes
-exp2-restore-nosnap-20261126-104001-r3-3,20,true,true,37,1,1048,3936,0,,,,,0,,123.358,true,0,0

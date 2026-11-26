@@ -150,5 +150,3 @@ vite.config.ts.timestamp-*
 
 # 부하 봇 실행 결과 (실행마다 쌓여 커지므로 git에 올리지 않음, 보고서에 쓸 결과는 따로 보관)
 loadtest/results/
-# 실험 결과의 봇 로그는 원본으로 보관
-!docs/experiments/**/*.log
