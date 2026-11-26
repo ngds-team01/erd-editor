@@ -280,6 +280,49 @@ kubectl --context kind-erd scale deployment/editor --replicas=2
 
 제안서 목표: 장애 복구(재접속 시간) p95 ≤ 5초, 편집 유실 0건.
 
+#### 한 번에 돌리기 (`npm run exp2`)
+
+아래 (a)·(b)의 손 절차(파드 지우기, Enter 누르기, 결과 모으기)를 제안서 조건(10회 × 3반복)대로 자동으로 반복한다.
+봇과 측정은 `npm run bot`을 그대로 하위 프로세스로 띄우고, 실행기는 kubectl로 파드를 지우고 결과를 묶기만 한다.
+
+```bash
+npm run exp2 -- --case kill             # (a) 접속 중 강제 종료: 실행 3번 × 삭제 10번 (약 18분)
+npm run exp2 -- --case restore-nosnap   # (b) 스냅샷 전: 워커를 0개로 줄이고 3 × 10번 (약 36분, 끝나면 워커 수를 되돌림)
+npm run exp2 -- --case restore-snap     # (b) 스냅샷 후: 봇이 나가고 40초 뒤 지우기, 3 × 10번 (약 57분)
+npm run exp2 -- --case kill --reps 1 --count 2 --bots 6 --interval 20   # 짧게 동작 확인
+```
+
+| 옵션 | 기본값 | 설명 |
+| --- | --- | --- |
+| `--case` | (필수) | `kill`, `restore-nosnap`, `restore-snap` |
+| `--reps` | `3` | 반복 수 |
+| `--count` | `10` | `kill`: 실행마다 파드를 지우는 횟수. `restore-*`: 반복마다 복원 실행 수 |
+| `--bots` | `20` | 문서 하나의 봇 수 |
+| `--rate` | `1` | 봇 1개의 초당 편집 수 |
+| `--interval` | `30` | `kill`: 삭제 사이 간격(초). 편집 시간은 `15초 + 간격 × 횟수 + 30초`로 정해짐 |
+| `--duration` | `60` | `restore-*`: 실행마다 편집 시간(초) |
+| `--snapshot-wait` | `40` | `restore-snap`: 봇이 나간 뒤 파드를 지우기까지 기다리는 시간(초), 워커 주기(30초)보다 길게 |
+| `--context`, `--namespace` | `kind-erd`, `default` | kubectl 대상 |
+
+- `kill`: 편집 중에 이 문서의 연결이 가장 많은 편집 서버 파드를 `--force --grace-period=0`으로 지우고, 대체 파드가 Ready가 되면 간격을 채운 뒤 다음 삭제를 한다. 끊김은 `disconnected_at_ms`로 바로 앞 삭제에 나눠 담는다
+- `restore-*`: 봇이 모두 나가고 모든 파드에서 문서가 내려가면(`editor_docs` 0) 편집 서버 파드를 **모두** 강제 종료하고, 새 파드가 Ready가 된 뒤 5초(HAProxy가 다시 넣는 시간) 뒤에 관찰자를 붙인다. 새 파드 로그의 `복원 완료` 줄에서 서버 복원 시간과 복원 출처(스냅샷 있음·없음, Streams 항목 수)를 읽는다
+- 같은 문서를 브라우저로 열어 두지 않는다 (문서가 내려가지 않아 1분 뒤 멈춤)
+- Ctrl+C로 멈추면 하위 실행을 끝내고 줄여 둔 워커 수를 되돌린다
+
+결과는 `results/exp2-{case}-{시각}/`에 모인다. 하위 실행마다의 원본 CSV는 평소처럼 `results/{시각}-exp2-…/`에 남고, `runs.txt`가 어느 폴더인지 적어 둔다.
+
+| 파일 | 내용 |
+| --- | --- |
+| `report.md` | 결과 표 (반복마다 한 줄 + 전체)와 성공 기준 충족 여부, 커밋 SHA, 조건, 부하 PC |
+| `meta.json` | 실행 설정, 커밋 SHA·커밋 안 한 변경 여부, 파드별 이미지와 imageID, 레플리카 수, 부하 PC, 노드 목록 |
+| `kills.csv` | (`kill`) 삭제마다 한 줄: 지운 파드, 연결 수, 지운 시각, 대체 파드 Ready 시각, 재동기화 수, 최대, `detect_ms`(지운 뒤 처음 끊김을 알아채기까지), `recovered_ms`(지운 뒤 마지막 봇이 다시 동기화되기까지) |
+| `reconnects.csv` | (`kill`) 모든 반복의 재접속 기록에 `rep`·`kill`을 붙여 합친 것 |
+| `restores.csv` | (`restore-*`) 실행마다 한 줄: PASS, 해시, 빠진 추가·삭제, 관찰자 동기화 시간, 서버 복원 시간, 복원 출처, 하위 결과 폴더. 실행마다 다시 써서 중간에 멈춰도 남음 |
+| `*.log` | 하위 실행마다의 봇 출력 |
+
+- kind에서는 강제 종료 뒤 컨테이너가 실제로 죽어 연결이 끊기기까지 약 2초가 걸린다 (`detect_ms`). 재동기화 시간(`duration_ms`)은 봇이 끊김을 안 때부터 재고, 지운 때부터 보려면 `recovered_ms`를 본다
+
+
 #### (a) 접속 중 강제 종료 → 재접속 시간
 
 봇이 편집하는 동안 다른 터미널에서 파드를 지운다. 봇은 클라이언트와 같은 규칙(1012면 0~500ms, 그 외 0.5s → 1s → 2s … 최대 10s, ±20%)으로 다른 파드에 다시 붙는다.
@@ -412,5 +455,7 @@ npm run typecheck  # 타입 검사 (client 코드 포함)
 | `src/reconnect.ts` | client의 재접속 규칙을 봇 provider에 연결 |
 | `src/reconnectTime.ts` | 끊김부터 다시 동기화까지의 재접속 시간 기록 |
 | `src/restore.ts` | 문서 상태(clock·삭제 수) 적기와 빠진 연산 수 계산 |
+| `src/exp2.ts` | 실험 2 실행기: 파드 삭제를 반복하며 `index.ts`를 하위 프로세스로 돌리고 결과를 한 폴더에 모음 |
+| `src/exp2Report.ts` | 실험 2 결과 정리: 끊김을 삭제별로 나누기, 서버 복원 로그 읽기, 결과 표 |
 | `src/model.ts`, `src/presence.ts` | client 코드를 그대로 다시 내보냄 |
 | `src/testServer.ts` | 테스트용 최소 서버 |

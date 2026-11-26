@@ -102,7 +102,7 @@ export function pickAction(doc: Y.Doc, random: Random, limits: EditLimits = DEFA
   return available[available.length - 1]
 }
 
-// 드래그 경로 만들기: 현재 위치에서 무작위 지점까지 steps개로 나눈 좌표, 테이블이 없으면 null
+// 드래그 경로 만들기: 현재 위치에서 무작위 지점까지 steps개로 나눈 좌표, 테이블이나 위치가 없으면 null
 export function planDrag(doc: Y.Doc, random: Random): Drag | null {
   const tableId = randomTableId(doc, random)
   const table = tableId && getTables(doc).get(tableId)
@@ -110,7 +110,12 @@ export function planDrag(doc: Y.Doc, random: Random): Drag | null {
     return null
   }
 
-  const from = table.get('position') as Position
+  // 앞선 업데이트를 아직 못 받은 순간(재접속 직후 등)에는 이전 위치의 삭제만 먼저 반영돼 position이 잠깐 비어 있을 수 있음
+  // 그때는 드래그하지 않고 넘어감 (다시 동기화되면 채워짐)
+  const from = table.get('position') as Position | undefined
+  if (!from) {
+    return null
+  }
   const to = {
     x: clamp(from.x + random.int(-MAX_DRAG_DISTANCE, MAX_DRAG_DISTANCE), 0, CANVAS_SIZE),
     y: clamp(from.y + random.int(-MAX_DRAG_DISTANCE, MAX_DRAG_DISTANCE), 0, CANVAS_SIZE),
