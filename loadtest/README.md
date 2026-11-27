@@ -304,6 +304,12 @@ npm run exp2 -- --case kill --reps 1 --count 2 --bots 6 --interval 20   # 짧게
 | `--snapshot-wait` | `40` | `restore-snap`: 봇이 나간 뒤 파드를 지우기까지 기다리는 시간(초), 워커 주기(30초)보다 길게 |
 | `--context`, `--namespace` | `kind-erd`, `default` | kubectl 대상 |
 
+Windows에서는 클러스터를 WSL 안에서 띄우므로 Windows 쪽 kubectl은 `kind-erd`를 모른다. 실행기를 Windows(PowerShell 등)에서 돌리려면 먼저 WSL에서 아래를 한 번 실행해 Windows 쪽 kubeconfig에 `kind-erd`를 넣는다. 클러스터를 다시 만들면(`make up`) 다시 실행한다.
+
+```bash
+kind export kubeconfig --name erd --kubeconfig /mnt/c/Users/<사용자이름>/.kube/config
+```
+
 - `kill`: 편집 중에 이 문서의 연결이 가장 많은 편집 서버 파드를 `--force --grace-period=0`으로 지우고, 대체 파드가 Ready가 되면 간격을 채운 뒤 다음 삭제를 한다. 끊김은 `disconnected_at_ms`로 바로 앞 삭제에 나눠 담는다
 - `restore-*`: 봇이 모두 나가고 모든 파드에서 문서가 내려가면(`editor_docs` 0) 편집 서버 파드를 **모두** 강제 종료하고, 새 파드가 Ready가 된 뒤 5초(HAProxy가 다시 넣는 시간) 뒤에 관찰자를 붙인다. 새 파드 로그의 `복원 완료` 줄에서 서버 복원 시간과 복원 출처(스냅샷 있음·없음, Streams 항목 수)를 읽는다
 - 같은 문서를 브라우저로 열어 두지 않는다 (문서가 내려가지 않아 1분 뒤 멈춤)
