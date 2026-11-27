@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import * as Y from 'yjs'
-import { randomEdit } from './actions'
+import { planDrag, randomEdit } from './actions'
 import { getColumns, getRelations, getTables } from './model'
 import { isTableEditing, parseEditing } from './presence'
 import { createRandom } from './random'
@@ -51,5 +51,17 @@ describe('randomEdit의 editing', () => {
       }
     }
     assert.ok(deletes > 0, '테이블 삭제가 한 번도 나오지 않음')
+  })
+})
+
+describe('planDrag', () => {
+  // 재접속 직후처럼 앞선 업데이트를 아직 못 받으면, 이전 위치의 삭제만 먼저 반영돼 position이 잠깐 비어 있을 수 있음
+  // (실험 2에서 파드를 반복해 지울 때 봇이 이 상태에서 멈췄음)
+  it('위치가 비어 있는 테이블은 드래그하지 않음', () => {
+    const doc = new Y.Doc()
+    const table = new Y.Map()
+    table.set('id', 't1')
+    getTables(doc).set('t1', table as never)
+    assert.equal(planDrag(doc, createRandom(1)), null)
   })
 })
