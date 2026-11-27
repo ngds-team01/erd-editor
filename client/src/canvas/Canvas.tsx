@@ -115,12 +115,15 @@ function mergeTables(
     }
 
     const table = readTable(tableMap)
+    //table update를 위해 이전 위치 삭제한 직후 접속한 경우 position이 비어 있는 현상 해결
+    // 화면 이전 위치 유지, update 도착 시 이동 함수 호출
+    const position = (table.position as TableData['position'] | undefined) ?? node.position
     return [
       {
         // selected, measured 등 React Flow가 관리하는 값 유지
         ...node,
         // 드래그 중이면 화면 위치 유지, Y.Doc 값은 최대 50ms 과거라 쓰면 node가 뒤로 튐
-        position: node.dragging ? node.position : table.position,
+        position: node.dragging ? node.position : position,
         data: { table, doc, onOpen },
       },
     ]
