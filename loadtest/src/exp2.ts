@@ -158,8 +158,10 @@ type Child = {
 }
 
 function startBot(args: string[], logFile: string, label: string): Child {
-  const tsx = path.join(LOADTEST_DIR, 'node_modules', '.bin', 'tsx')
-  const child = spawn(tsx, ['src/index.ts', ...args], { cwd: LOADTEST_DIR, stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts', ...args], {
+    cwd: LOADTEST_DIR,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   appendFileSync(logFile, `$ npm run bot -- ${args.join(' ')}\n`)
   let output = ''
   const waiters: { text: string; from: number; resolve: () => void }[] = []
