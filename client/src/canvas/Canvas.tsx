@@ -79,6 +79,11 @@ type DragHandlers = Pick<
   'onNodeDrag' | 'onNodeDragStop' | 'onSelectionDrag' | 'onSelectionDragStop'
 >
 
+// position이 비어 있으면 node를 만들지 않고 위치가 도착한 뒤 그림
+function hasPosition(table: TableData): boolean {
+  return (table.position as TableData['position'] | undefined) !== undefined
+}
+
 // TableData를 React Flow - Node 형식으로 변환
 function toNode(table: TableData, doc: Y.Doc, onOpen: (tableId: string) => void): TableNodeType {
   return {
@@ -130,9 +135,14 @@ function mergeTables(
   })
 
   // Y.Doc에는 있지만 화면에 없는 id = 새로 추가된 table
+  // 위치가 비어 있으면 이번에는 건너뜀, 위치가 도착하면 다시 호출돼 그때 추가
   const added = [...changedIds].flatMap((id) => {
     const tableMap = tables.get(id)
-    return tableMap && !knownIds.has(id) ? [toNode(readTable(tableMap), doc, onOpen)] : []
+    if (!tableMap || knownIds.has(id)) {
+      return []
+    }
+    const table = readTable(tableMap)
+    return hasPosition(table) ? [toNode(table, doc, onOpen)] : []
   })
 
   return [...updated, ...added]
@@ -285,9 +295,11 @@ export function Canvas({
   onSelect,
   peers,
 }: CanvasProps) {
-  // 함수를 넘겨 첫 렌더링 때만 문서 전체를 읽음
+  // 함수를 넘겨 첫 렌더링 때만 문서 전체를 읽음, 위치가 비어 있는 table은 이후 mergeTables이 추가
   const [nodes, setNodes] = useState(() =>
-    readTables(doc).map((table) => toNode(table, doc, onOpenTable)),
+    readTables(doc)
+      .filter(hasPosition)
+      .map((table) => toNode(table, doc, onOpenTable)),
   )
   // 관계선, 첫 렌더링 때만 문서 전체를 읽음
   const [edges, setEdges] = useState(() => syncEdges([], doc))
