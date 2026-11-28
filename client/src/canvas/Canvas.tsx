@@ -19,16 +19,13 @@ import type {
 import type * as Y from 'yjs'
 import {
   deleteTables,
-  getTables,
   isRelationDrawable,
   moveTables,
   observeRelations,
   observeTables,
   readRelations,
-  readTable,
-  readTables,
 } from '../model'
-import type { RelationData, TableData } from '../model'
+import type { RelationData } from '../model'
 import { collectEditors, collectRelationEditors } from '../sync/presence'
 import type { Peer, PeerStore } from '../sync/presence'
 import { RelationEdge } from './RelationEdge'
@@ -36,6 +33,7 @@ import type { RelationEdgeType } from './RelationEdge'
 import type { RelationMode } from './relationMode'
 import { TableNode } from './TableNode'
 import type { TableNodeType } from './TableNode'
+import { mergeTables, readNodes } from './tableNodes'
 
 // key: node의 type, value: node Component(TableNode)
 const nodeTypes: NodeTypes = { table: TableNode }
@@ -78,62 +76,6 @@ type DragHandlers = Pick<
   ReactFlowProps<TableNodeType>,
   'onNodeDrag' | 'onNodeDragStop' | 'onSelectionDrag' | 'onSelectionDragStop'
 >
-
-// TableData를 React Flow - Node 형식으로 변환
-function toNode(table: TableData, doc: Y.Doc, onOpen: (tableId: string) => void): TableNodeType {
-  return {
-    id: table.id,
-    type: 'table',
-    position: table.position,
-    data: { table, doc, onOpen },
-  }
-}
-
-// 바뀐 table만 Y.Doc에서 다시 읽어 node 배열에 반영
-// table이 갱신 단위이며, column 변경도 소속 table id로 들어와 table 전체를 다시 읽음
-function mergeTables(
-  nodes: TableNodeType[],
-  doc: Y.Doc,
-  onOpen: (tableId: string) => void,
-  changedIds: Set<string>,
-): TableNodeType[] {
-  const tables = getTables(doc)
-  // 이미 화면에 있는 node의 id, 새 table을 구분하는 데 사용
-  const knownIds = new Set(nodes.map((node) => node.id))
-
-  // flatMap: 배열을 반환해 이어 붙임, [node] = 유지, [] = 제거
-  const updated = nodes.flatMap((node) => {
-    // 안 바뀐 node는 같은 객체를 유지해 memo가 다시 그리지 않게 함
-    if (!changedIds.has(node.id)) {
-      return [node]
-    }
-
-    // Y.Doc에 없으면 삭제된 table이므로 node 제거
-    const tableMap = tables.get(node.id)
-    if (!tableMap) {
-      return []
-    }
-
-    const table = readTable(tableMap)
-    return [
-      {
-        // selected, measured 등 React Flow가 관리하는 값 유지
-        ...node,
-        // 드래그 중이면 화면 위치 유지, Y.Doc 값은 최대 50ms 과거라 쓰면 node가 뒤로 튐
-        position: node.dragging ? node.position : table.position,
-        data: { table, doc, onOpen },
-      },
-    ]
-  })
-
-  // Y.Doc에는 있지만 화면에 없는 id = 새로 추가된 table
-  const added = [...changedIds].flatMap((id) => {
-    const tableMap = tables.get(id)
-    return tableMap && !knownIds.has(id) ? [toNode(readTable(tableMap), doc, onOpen)] : []
-  })
-
-  return [...updated, ...added]
-}
 
 // RelationData를 React Flow - Edge 형식으로 변환, source = 부모, target = 자식
 function toEdge(relation: RelationData): RelationEdgeType {
@@ -283,9 +225,7 @@ export function Canvas({
   peers,
 }: CanvasProps) {
   // 함수를 넘겨 첫 렌더링 때만 문서 전체를 읽음
-  const [nodes, setNodes] = useState(() =>
-    readTables(doc).map((table) => toNode(table, doc, onOpenTable)),
-  )
+  const [nodes, setNodes] = useState(() => readNodes(doc, onOpenTable))
   // 관계선, 첫 렌더링 때만 문서 전체를 읽음
   const [edges, setEdges] = useState(() => syncEdges([], doc))
   // lastWrite가 유지되도록 처음 한 번만 생성
